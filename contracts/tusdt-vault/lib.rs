@@ -27,9 +27,9 @@ mod vault {
         // Token address of tusdt.
         token: TusdtErc20Ref,
 
-        vaults: Mapping<(AccountId, u64), Vault>,
-        vault_count: Mapping<AccountId, u64>,
-        vault_keys: StorageVec<(AccountId, u64)>,
+        vaults: Mapping<(AccountId, u32), Vault>,
+        vault_count: Mapping<AccountId, u32>,
+        vault_keys: StorageVec<(AccountId, u32)>,
     }
 
     #[ink(event)]
@@ -37,7 +37,7 @@ mod vault {
         #[ink(topic)]
         owner: AccountId,
         #[ink(topic)]
-        vault_id: u64,
+        vault_id: u32,
         amount: Balance,
     }
 
@@ -46,7 +46,7 @@ mod vault {
         #[ink(topic)]
         owner: AccountId,
         #[ink(topic)]
-        vault_id: u64,
+        vault_id: u32,
         amount: Balance,
     }
 
@@ -55,7 +55,7 @@ mod vault {
         #[ink(topic)]
         owner: AccountId,
         #[ink(topic)]
-        vault_id: u64,
+        vault_id: u32,
         amount: Balance,
     }
 
@@ -64,7 +64,7 @@ mod vault {
         #[ink(topic)]
         owner: AccountId,
         #[ink(topic)]
-        vault_id: u64,
+        vault_id: u32,
         amount: Balance,
     }
 
@@ -73,7 +73,7 @@ mod vault {
         #[ink(topic)]
         owner: AccountId,
         #[ink(topic)]
-        vault_id: u64,
+        vault_id: u32,
         amount: Balance,
     }
 
@@ -85,7 +85,7 @@ mod vault {
         NotVaultOwner,
         TransferFailed,
         TokenBorrowedNotZero,
-        OutOfBoundPageSize,
+        OutOfBoundPage,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
@@ -108,7 +108,7 @@ mod vault {
         }
 
         #[ink(message, payable)]
-        pub fn create_vault(&mut self) -> Result<u64> {
+        pub fn create_vault(&mut self) -> Result<u32> {
             let caller = self.env().caller();
             let amount = self.env().transferred_value();
             let timestamp = self.env().block_timestamp();
@@ -137,7 +137,7 @@ mod vault {
         }
 
         #[ink(message, payable)]
-        pub fn add_collateral(&mut self, vault_id: u64) -> Result<()> {
+        pub fn add_collateral(&mut self, vault_id: u32) -> Result<()> {
             let caller = self.env().caller();
             let amount = self.env().transferred_value();
 
@@ -163,7 +163,7 @@ mod vault {
         }
 
         #[ink(message)]
-        pub fn borrow_token(&mut self, vault_id: u64, amount: Balance) -> Result<()> {
+        pub fn borrow_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             let caller = self.env().caller();
 
             let mut vault = self
@@ -198,7 +198,7 @@ mod vault {
         }
 
         #[ink(message)]
-        pub fn repay_token(&mut self, vault_id: u64, amount: Balance) -> Result<()> {
+        pub fn repay_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             let caller = self.env().caller();
 
             let mut vault = self
@@ -228,7 +228,7 @@ mod vault {
         }
 
         #[ink(message)]
-        pub fn release_collateral(&mut self, vault_id: u64, amount: Balance) -> Result<()> {
+        pub fn release_collateral(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             let caller = self.env().caller();
 
             let mut vault = self
@@ -265,7 +265,7 @@ mod vault {
         }
 
         #[ink(message)]
-        pub fn get_vault(&self, owner: AccountId, vault_id: u64) -> Option<Vault> {
+        pub fn get_vault(&self, owner: AccountId, vault_id: u32) -> Option<Vault> {
             self.vaults.get((owner, vault_id))
         }
 
@@ -278,7 +278,7 @@ mod vault {
         pub fn get_vault_collateral_balance(
             &self,
             owner: AccountId,
-            vault_id: u64,
+            vault_id: u32,
         ) -> Option<Balance> {
             self.vaults
                 .get((owner, vault_id))
@@ -286,11 +286,29 @@ mod vault {
         }
 
         #[ink(message)]
+        pub fn get_vaults(&self, owner: AccountId, page: u32) -> Result<Vec<Vault>> {
+            let total_owner_vaults = self.vault_count.get(owner).unwrap_or_default();
+            let start = page.saturating_mul(PAGE_SIZE);
+            if start >= total_owner_vaults {
+                return Err(Error::OutOfBoundPage);
+            }
+            let end = min(start.saturating_add(PAGE_SIZE), total_owner_vaults);
+
+            let mut vaults = Vec::new();
+            let _ = (start..end).map(|index| {
+                let vault = self.vaults.get((owner, index));
+                vaults.push(vault.expect("should be present"));
+            });
+
+            Ok(vaults)
+        }
+
+        #[ink(message)]
         pub fn get_all_vaults(&self, page: u32) -> Result<Vec<Vault>> {
             let total_vaults = self.vault_keys.len();
             let start = page.saturating_mul(PAGE_SIZE);
             if start >= total_vaults {
-                return Err(Error::OutOfBoundPageSize);
+                return Err(Error::OutOfBoundPage);
             }
             let end = min(start.saturating_add(PAGE_SIZE), total_vaults);
 
