@@ -6,7 +6,11 @@ repository = ""
 edition = "2021"
 
 [workspace]
-members = ["contracts/tusdt-erc20", "contracts/tusdt-vault"]
+members = [
+    "contracts/tusdt-erc20",
+    "contracts/tusdt-auction",
+    "contracts/tusdt-vault",
+]
 resolver = "2"
 
 [workspace.dependencies]

@@ -44,10 +44,9 @@ mod tusdt {
 
     impl TusdtErc20 {
         #[ink(constructor)]
-        pub fn new() -> Self {
-            let caller = Self::env().caller();
+        pub fn new(owner: AccountId) -> Self {
             Self {
-                owner: caller,
+                owner,
                 total_supply: 0,
                 balances: Mapping::default(),
                 allowances: Default::default(),

@@ -6966,6 +6966,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4f195fd851901624eee5a58c4bb2b4f06399148fcd0ed336e6f1cb60a9881df"
 
 [[package]]
+name = "tusdt-auction"
+version = "0.1.0"
+dependencies = [
+ "ink",
+ "ink_e2e",
+ "tusdt-erc20",
+]
+
+[[package]]
 name = "tusdt-erc20"
 version = "0.1.0"
 dependencies = [
@@ -6979,6 +6988,7 @@ version = "0.1.0"
 dependencies = [
  "ink",
  "ink_e2e",
+ "tusdt-auction",
  "tusdt-erc20",
 ]
 

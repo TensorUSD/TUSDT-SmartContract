@@ -7,6 +7,7 @@ mod vault {
     use ink::storage::{Mapping, StorageVec};
     use ink::ToAccountId;
 
+    use tusdt_auction::TusdtAuctionRef;
     use tusdt_erc20::TusdtErc20Ref;
 
     const PAGE_SIZE: u32 = 10;
@@ -35,6 +36,8 @@ mod vault {
 
         // Token address of tusdt.
         token: TusdtErc20Ref,
+        // Auction contract address
+        auction: TusdtAuctionRef,
 
         collateral_ratio_parts: u32,
         liquidation_ratio_parts: u32,
@@ -43,6 +46,7 @@ mod vault {
         vaults: Mapping<(AccountId, u32), Vault>,
         vault_count: Mapping<AccountId, u32>,
         vault_keys: StorageVec<(AccountId, u32)>,
+        liquidation_auctions: Mapping<(AccountId, u32), u64>,
     }
 
     #[ink(event)]
@@ -97,6 +101,30 @@ mod vault {
         interest_rate_parts: u32,
     }
 
+    #[ink(event)]
+    pub struct LiquidationAuctionCreated {
+        #[ink(topic)]
+        owner: AccountId,
+        #[ink(topic)]
+        vault_id: u32,
+        #[ink(topic)]
+        auction_id: u64,
+    }
+
+    #[ink(event)]
+    pub struct VaultLiquidated {
+        #[ink(topic)]
+        owner: AccountId,
+        #[ink(topic)]
+        vault_id: u32,
+        #[ink(topic)]
+        auction_id: u64,
+        winner: Option<AccountId>,
+        winning_bid: Balance,
+        collateral_sold: Balance,
+        debt_cleared: Balance,
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
@@ -110,6 +138,12 @@ mod vault {
         MaxBorrowExceeded,
         LiquidationRatioExceeded,
         RepayAmountTooHigh,
+        VaultInLiquidation,
+        NotLiquidatable,
+        LiquidationAuctionExists,
+        AuctionContractCallFailed,
+        AuctionNotFound,
+        AuctionNotFinalized,
         ArithmeticError,
         NotContractOwner,
     }
@@ -118,23 +152,32 @@ mod vault {
 
     impl TusdtVault {
         #[ink(constructor)]
-        pub fn new(token_code_hash: Hash) -> Self {
+        pub fn new(token_code_hash: Hash, auction_code_hash: Hash) -> Self {
             let owner = Self::env().caller();
-            let token = TusdtErc20Ref::new()
+
+            let contract_account = Self::env().account_id();
+            let token = TusdtErc20Ref::new(contract_account)
                 .code_hash(token_code_hash)
                 .endowment(0)
                 .salt_bytes([0; 32])
+                .instantiate();
+            let auction = TusdtAuctionRef::new(contract_account, token.to_account_id())
+                .code_hash(auction_code_hash)
+                .endowment(0)
+                .salt_bytes([1; 32])
                 .instantiate();
 
             Self {
                 owner,
                 token,
+                auction,
                 collateral_ratio_parts: DEFAULT_COLLATERAL_RATIO_PARTS,
                 liquidation_ratio_parts: DEFAULT_LIQUIDATION_RATIO_PARTS,
                 interest_rate_parts: DEFAULT_INTEREST_RATE_PARTS,
                 vaults: Mapping::default(),
                 vault_count: Mapping::default(),
                 vault_keys: StorageVec::default(),
+                liquidation_auctions: Mapping::default(),
             }
         }
 
@@ -211,6 +254,9 @@ mod vault {
             if vault.owner != caller {
                 return Err(Error::NotVaultOwner);
             }
+            if self.liquidation_auctions.get((caller, vault_id)).is_some() {
+                return Err(Error::VaultInLiquidation);
+            }
 
             vault.collateral_balance = vault
                 .collateral_balance
@@ -238,6 +284,9 @@ mod vault {
 
             if vault.owner != caller {
                 return Err(Error::NotVaultOwner);
+            }
+            if self.liquidation_auctions.get((caller, vault_id)).is_some() {
+                return Err(Error::VaultInLiquidation);
             }
 
             self.accrue_interest(&mut vault)?;
@@ -279,6 +328,9 @@ mod vault {
             if vault.owner != caller {
                 return Err(Error::NotVaultOwner);
             }
+            if self.liquidation_auctions.get((caller, vault_id)).is_some() {
+                return Err(Error::VaultInLiquidation);
+            }
 
             self.accrue_interest(&mut vault)?;
             if amount > vault.borrowed_token_balance {
@@ -316,6 +368,9 @@ mod vault {
             if vault.owner != caller {
                 return Err(Error::NotVaultOwner);
             }
+            if self.liquidation_auctions.get((caller, vault_id)).is_some() {
+                return Err(Error::VaultInLiquidation);
+            }
 
             if vault.collateral_balance < amount {
                 return Err(Error::InsufficientCollateral);
@@ -346,6 +401,112 @@ mod vault {
         }
 
         #[ink(message)]
+        pub fn trigger_liquidation_auction(
+            &mut self,
+            owner: AccountId,
+            vault_id: u32,
+            duration_secs: Option<u64>,
+        ) -> Result<u64> {
+            if self.liquidation_auctions.get((owner, vault_id)).is_some() {
+                return Err(Error::LiquidationAuctionExists);
+            }
+
+            let mut vault = self
+                .vaults
+                .get((owner, vault_id))
+                .ok_or(Error::VaultNotFound)?;
+            self.accrue_interest(&mut vault)?;
+
+            if !self.is_liquidatable(&vault)? {
+                return Err(Error::NotLiquidatable);
+            }
+
+            let auction_id = self
+                .auction
+                .create_auction(
+                    owner,
+                    vault_id,
+                    vault.collateral_balance,
+                    vault.borrowed_token_balance,
+                    duration_secs,
+                )
+                .map_err(|_| Error::AuctionContractCallFailed)?;
+
+            self.vaults.insert((owner, vault_id), &vault);
+            self.liquidation_auctions
+                .insert((owner, vault_id), &auction_id);
+
+            self.env().emit_event(LiquidationAuctionCreated {
+                owner,
+                vault_id,
+                auction_id,
+            });
+
+            Ok(auction_id)
+        }
+
+        #[ink(message)]
+        pub fn settle_liquidation_auction(
+            &mut self,
+            owner: AccountId,
+            vault_id: u32,
+        ) -> Result<()> {
+            let auction_id = self
+                .liquidation_auctions
+                .get((owner, vault_id))
+                .ok_or(Error::AuctionNotFound)?;
+
+            let auction = self
+                .auction
+                .get_auction(auction_id)
+                .ok_or(Error::AuctionNotFound)?;
+
+            if !auction.is_finalized {
+                return Err(Error::AuctionNotFinalized);
+            }
+
+            let winner = auction.highest_bidder;
+            let winning_bid = auction.highest_bid;
+
+            let mut vault = self
+                .vaults
+                .get((owner, vault_id))
+                .ok_or(Error::VaultNotFound)?;
+            let mut collateral_sold = 0;
+            let mut debt_cleared = 0;
+
+            if let Some(winner) = winner {
+                collateral_sold = auction.collateral_balance;
+                debt_cleared = auction.debt_balance;
+
+                if collateral_sold > 0 && self.env().transfer(winner, collateral_sold).is_err() {
+                    return Err(Error::TransferFailed);
+                }
+                self.token
+                    .burn(self.get_auction_address(), auction.highest_bid)
+                    .map_err(|_| Error::TransferFailed)?;
+
+                vault.collateral_balance = vault.collateral_balance.saturating_sub(collateral_sold);
+                vault.borrowed_token_balance = 0;
+            }
+
+            self.vaults.insert((owner, vault_id), &vault);
+            self.liquidation_auctions.remove((owner, vault_id));
+
+            self.env().emit_event(VaultLiquidated {
+                owner,
+                vault_id,
+                auction_id,
+                winner,
+                winning_bid,
+                collateral_sold,
+                debt_cleared,
+            });
+
+            Ok(())
+        }
+
+        #[ink(message)]
         pub fn get_vault(&self, owner: AccountId, vault_id: u32) -> Option<Vault> {
             self.vaults.get((owner, vault_id))
         }
@@ -353,6 +514,11 @@ mod vault {
         #[ink(message)]
         pub fn get_token_address(&self) -> AccountId {
             self.token.to_account_id()
+        }
+
+        #[ink(message)]
+        pub fn get_auction_address(&self) -> AccountId {
+            self.auction.to_account_id()
         }
 
         #[ink(message)]
@@ -373,6 +539,11 @@ mod vault {
             self.vaults
                 .get((owner, vault_id))
                 .map(|v| v.collateral_balance)
+        }
+
+        #[ink(message)]
+        pub fn get_liquidation_auction_id(&self, owner: AccountId, vault_id: u32) -> Option<u64> {
+            self.liquidation_auctions.get((owner, vault_id))
         }
 
         #[ink(message)]
@@ -456,6 +627,15 @@ mod vault {
 
         fn max_borrow_allowed(&self, collateral_balance: Balance) -> Result<Balance> {
             Self::div_ratio(collateral_balance, self.collateral_ratio_parts)
+        }
+
+        fn liquidation_limit(&self, collateral_balance: Balance) -> Result<Balance> {
+            Self::div_ratio(collateral_balance, self.liquidation_ratio_parts)
+        }
+
+        fn is_liquidatable(&self, vault: &Vault) -> Result<bool> {
+            let limit = self.liquidation_limit(vault.collateral_balance)?;
+            Ok(vault.borrowed_token_balance > limit)
         }
 
         fn accrue_interest(&self, vault: &mut Vault) -> Result<()> {
