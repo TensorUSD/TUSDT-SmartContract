@@ -547,6 +547,16 @@ mod vault {
         }
 
         #[ink(message)]
+        pub fn get_total_vaults_count(&self) -> u32 {
+            self.vault_keys.len()
+        }
+
+        #[ink(message)]
+        pub fn get_vaults_count(&self, owner: AccountId) -> u32 {
+            self.vault_count.get(owner).unwrap_or_default()
+        }
+
+        #[ink(message)]
         pub fn get_vaults(&self, owner: AccountId, page: u32) -> Result<Vec<Vault>> {
             let total_owner_vaults = self.vault_count.get(owner).unwrap_or_default();
             let start = page.saturating_mul(PAGE_SIZE);
