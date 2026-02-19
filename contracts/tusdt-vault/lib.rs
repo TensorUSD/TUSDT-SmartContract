@@ -18,7 +18,9 @@ mod vault {
     const DEFAULT_INTEREST_RATE_PARTS: u32 = 50_000_000; // 5%
     const LIQUIDATION_FEE_PARTS: u32 = 10_000_000; // 1 %
 
-    const SECONDS_PER_YEAR: u128 = 31_536_000;
+    const SECONDS_PER_DAY: u64 = 86_400;
+    const DAYS_PER_YEAR: u128 = 365;
+    const FIXED_POINT_SCALAR: u128 = 1_000_000_000_000_000_000;
 
     #[derive(Debug, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
@@ -642,6 +644,49 @@ mod vault {
                 .ok_or(Error::ArithmeticError)
         }
 
+        fn mul_fixed(value: u128, fixed: u128) -> Result<u128> {
+            value
+                .checked_mul(fixed)
+                .ok_or(Error::ArithmeticError)?
+                .checked_div(FIXED_POINT_SCALAR)
+                .ok_or(Error::ArithmeticError)
+        }
+
+        // e^x with Taylor series
+        fn exp_fixed(exponent: u128) -> Result<u128> {
+            let mut sum = FIXED_POINT_SCALAR;
+            let mut term = FIXED_POINT_SCALAR;
+
+            for n in 1..=32_u128 {
+                term = Self::mul_fixed(term, exponent)?
+                    .checked_div(n)
+                    .ok_or(Error::ArithmeticError)?;
+                if term == 0 {
+                    break;
+                }
+                sum = sum.checked_add(term).ok_or(Error::ArithmeticError)?;
+            }
+
+            Ok(sum)
+        }
+
+        // base ^ exponent by square and multiply.
+        fn pow_fixed(mut base: u128, mut exponent: u128) -> Result<u128> {
+            let mut result = FIXED_POINT_SCALAR;
+
+            while exponent > 0 {
+                if exponent % 2 == 1 {
+                    result = Self::mul_fixed(result, base)?;
+                }
+                exponent /= 2;
+                if exponent > 0 {
+                    base = Self::mul_fixed(base, base)?;
+                }
+            }
+
+            Ok(result)
+        }
+
         fn max_borrow_allowed(&self, collateral_balance: Balance) -> Result<Balance> {
             Self::div_ratio(collateral_balance, self.collateral_ratio_parts)
         }
@@ -665,22 +710,39 @@ mod vault {
                 return Ok(());
             }
 
-            // We checked that noe > vault.last_interest_accrued_at
+            // We checked that now > vault.last_interest_accrued_at.
             #[allow(clippy::arithmetic_side_effects)]
             let elapsed = (now - vault.last_interest_accrued_at) as u128;
-            let yearly_interest =
-                Self::mul_ratio(vault.borrowed_token_balance, self.interest_rate_parts)?;
-            let interest = yearly_interest
-                .checked_mul(elapsed)
+            let borrowed_days = elapsed
+                .checked_div(SECONDS_PER_DAY as u128)
+                .ok_or(Error::ArithmeticError)?;
+            if borrowed_days == 0 {
+                return Ok(());
+            }
+
+            let daily_exponent = (self.interest_rate_parts as u128)
+                .checked_mul(FIXED_POINT_SCALAR)
                 .ok_or(Error::ArithmeticError)?
-                .checked_div(SECONDS_PER_YEAR)
+                .checked_div(PARTS_PER_BILLION)
+                .ok_or(Error::ArithmeticError)?
+                .checked_div(DAYS_PER_YEAR)
                 .ok_or(Error::ArithmeticError)?;
 
-            vault.borrowed_token_balance = vault
-                .borrowed_token_balance
-                .checked_add(interest)
+            let daily_growth_factor = Self::exp_fixed(daily_exponent)?;
+            let compounded_growth_factor = Self::pow_fixed(daily_growth_factor, borrowed_days)?;
+
+            vault.borrowed_token_balance =
+                Self::mul_fixed(vault.borrowed_token_balance, compounded_growth_factor)?;
+
+            let accrued_seconds = borrowed_days
+                .checked_mul(SECONDS_PER_DAY as u128)
+                .ok_or(Error::ArithmeticError)?
+                .checked_add(vault.last_interest_accrued_at as u128)
                 .ok_or(Error::ArithmeticError)?;
-            vault.last_interest_accrued_at = now;
+            if accrued_seconds > u64::MAX as u128 {
+                return Err(Error::ArithmeticError);
+            }
+            vault.last_interest_accrued_at = accrued_seconds as u64;
 
             Ok(())
         }
