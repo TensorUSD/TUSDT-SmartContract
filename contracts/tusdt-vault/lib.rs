@@ -23,6 +23,7 @@ mod vault {
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub struct Vault {
+        pub id: u32,
         pub owner: AccountId,
         pub collateral_balance: Balance,
         pub borrowed_token_balance: Balance,
@@ -219,6 +220,7 @@ mod vault {
 
             let vault_id = self.vault_count.get(caller).unwrap_or(0);
             let vault = Vault {
+                id: vault_id,
                 owner: caller,
                 collateral_balance: amount,
                 borrowed_token_balance: 0,
