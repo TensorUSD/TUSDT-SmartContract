@@ -1,12 +1,13 @@
 [workspace.package]
 license = "MIT-0"
-authors = ["tensorusd tensorusd@gmail.com"]
+authors = ["tensorusd admin@tensorusd.com"]
 homepage = ""
 repository = ""
 edition = "2021"
 
 [workspace]
 members = [
+    "primitives",
     "contracts/tusdt-erc20",
     "contracts/tusdt-auction",
     "contracts/tusdt-vault",
@@ -15,5 +16,7 @@ resolver = "2"
 
 [workspace.dependencies]
 ink = { version = "5.1.1", default-features = false }
+sp-arithmetic = { version = "26.1.0", default-features = false }
+tusdt-primitives = { path = "primitives", default-features = false }
 
 ink_e2e = { version = "5.1.1" }

@@ -6,21 +6,25 @@ mod vault {
     use ink::prelude::vec::Vec;
     use ink::storage::{Mapping, StorageVec};
     use ink::ToAccountId;
+    use tusdt_primitives::Ratio;
 
     use tusdt_auction::TusdtAuctionRef;
     use tusdt_erc20::TusdtErc20Ref;
 
     const PAGE_SIZE: u32 = 10;
-    const PARTS_PER_BILLION: u128 = 1_000_000_000;
 
-    const DEFAULT_COLLATERAL_RATIO_PARTS: u32 = 1_500_000_000; // 150%
-    const DEFAULT_LIQUIDATION_RATIO_PARTS: u32 = 1_200_000_000; // 120%
-    const DEFAULT_INTEREST_RATE_PARTS: u32 = 50_000_000; // 5%
-    const LIQUIDATION_FEE_PARTS: u32 = 10_000_000; // 1 %
-
-    const SECONDS_PER_DAY: u64 = 86_400;
-    const DAYS_PER_YEAR: u128 = 365;
-    const FIXED_POINT_SCALAR: u128 = 1_000_000_000_000_000_000;
+    mod params {
+        include!("params.rs");
+    }
+    mod interest {
+        include!("interest.rs");
+    }
+    mod risk {
+        include!("risk.rs");
+    }
+    mod vault_access {
+        include!("vault_access.rs");
+    }
 
     #[derive(Debug, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
@@ -34,6 +38,26 @@ mod vault {
         pub last_interest_accrued_at: u64,
     }
 
+    #[derive(Debug, Copy, Clone)]
+    #[ink::scale_derive(Decode, Encode, TypeInfo)]
+    #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
+    pub struct VaultContractParams {
+        pub collateral_ratio: Ratio,
+        pub liquidation_ratio: Ratio,
+        pub interest_rate: Ratio,
+        pub liquidation_fee: Ratio,
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    #[ink::scale_derive(Decode, Encode, TypeInfo)]
+    #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
+    pub struct VaultContractParamsPercentage {
+        pub collateral_ratio: u32,
+        pub liquidation_ratio: u32,
+        pub interest_rate: u32,
+        pub liquidation_fee: u32,
+    }
+
     #[ink(storage)]
     pub struct TusdtVault {
         owner: AccountId,
@@ -43,9 +67,7 @@ mod vault {
         // Auction contract address
         auction: TusdtAuctionRef,
 
-        collateral_ratio_parts: u32,
-        liquidation_ratio_parts: u32,
-        interest_rate_parts: u32,
+        params: VaultContractParams,
 
         vaults: Mapping<(AccountId, u32), Vault>,
         vault_count: Mapping<AccountId, u32>,
@@ -99,10 +121,8 @@ mod vault {
     }
 
     #[ink(event)]
-    pub struct RatiosUpdated {
-        collateral_ratio_parts: u32,
-        liquidation_ratio_parts: u32,
-        interest_rate_parts: u32,
+    pub struct ContractParamsUpdated {
+        params: VaultContractParamsPercentage,
     }
 
     #[ink(event)]
@@ -171,13 +191,13 @@ mod vault {
                 .salt_bytes([1; 32])
                 .instantiate();
 
+            let params = Self::default_contract_params();
+
             Self {
                 owner,
                 token,
                 auction,
-                collateral_ratio_parts: DEFAULT_COLLATERAL_RATIO_PARTS,
-                liquidation_ratio_parts: DEFAULT_LIQUIDATION_RATIO_PARTS,
-                interest_rate_parts: DEFAULT_INTEREST_RATE_PARTS,
+                params,
                 vaults: Mapping::default(),
                 vault_count: Mapping::default(),
                 vault_keys: StorageVec::default(),
@@ -186,31 +206,15 @@ mod vault {
         }
 
         #[ink(message)]
-        pub fn set_ratios(
-            &mut self,
-            collateral_ratio_parts: u32,
-            liquidation_ratio_parts: u32,
-            interest_rate_parts: u32,
-        ) -> Result<()> {
+        pub fn set_contract_params(&mut self, params: VaultContractParamsPercentage) -> Result<()> {
             if self.env().caller() != self.owner {
                 return Err(Error::NotContractOwner);
             }
 
-            Self::validate_ratios(
-                collateral_ratio_parts,
-                liquidation_ratio_parts,
-                interest_rate_parts,
-            )?;
+            let validated = Self::contract_params_from_percentages(params)?;
+            self.params = validated;
 
-            self.collateral_ratio_parts = collateral_ratio_parts;
-            self.liquidation_ratio_parts = liquidation_ratio_parts;
-            self.interest_rate_parts = interest_rate_parts;
-
-            self.env().emit_event(RatiosUpdated {
-                collateral_ratio_parts,
-                liquidation_ratio_parts,
-                interest_rate_parts,
-            });
+            self.env().emit_event(ContractParamsUpdated { params });
 
             Ok(())
         }
@@ -248,26 +252,14 @@ mod vault {
 
         #[ink(message, payable)]
         pub fn add_collateral(&mut self, vault_id: u32) -> Result<()> {
-            let caller = self.env().caller();
+            let (caller, mut vault) = self.load_caller_vault(vault_id)?;
             let amount = self.env().transferred_value();
-
-            let mut vault = self
-                .vaults
-                .get((caller, vault_id))
-                .ok_or(Error::VaultNotFound)?;
-
-            if vault.owner != caller {
-                return Err(Error::NotVaultOwner);
-            }
-            if self.liquidation_auctions.get((caller, vault_id)).is_some() {
-                return Err(Error::VaultInLiquidation);
-            }
 
             vault.collateral_balance = vault
                 .collateral_balance
                 .checked_add(amount)
                 .ok_or(Error::ArithmeticError)?;
-            self.vaults.insert((caller, vault_id), &vault);
+            self.save_vault(caller, vault_id, &vault);
 
             self.env().emit_event(CollateralAdded {
                 owner: caller,
@@ -280,19 +272,7 @@ mod vault {
 
         #[ink(message)]
         pub fn borrow_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
-            let caller = self.env().caller();
-
-            let mut vault = self
-                .vaults
-                .get((caller, vault_id))
-                .ok_or(Error::VaultNotFound)?;
-
-            if vault.owner != caller {
-                return Err(Error::NotVaultOwner);
-            }
-            if self.liquidation_auctions.get((caller, vault_id)).is_some() {
-                return Err(Error::VaultInLiquidation);
-            }
+            let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             self.accrue_interest(&mut vault)?;
 
@@ -310,7 +290,7 @@ mod vault {
                 .map_err(|_| Error::TransferFailed)?;
 
             vault.borrowed_token_balance = projected_borrowed;
-            self.vaults.insert((caller, vault_id), &vault);
+            self.save_vault(caller, vault_id, &vault);
 
             self.env().emit_event(TokensBorrowed {
                 owner: caller,
@@ -323,19 +303,7 @@ mod vault {
 
         #[ink(message)]
         pub fn repay_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
-            let caller = self.env().caller();
-
-            let mut vault = self
-                .vaults
-                .get((caller, vault_id))
-                .ok_or(Error::VaultNotFound)?;
-
-            if vault.owner != caller {
-                return Err(Error::NotVaultOwner);
-            }
-            if self.liquidation_auctions.get((caller, vault_id)).is_some() {
-                return Err(Error::VaultInLiquidation);
-            }
+            let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             self.accrue_interest(&mut vault)?;
             if amount > vault.borrowed_token_balance {
@@ -350,7 +318,7 @@ mod vault {
                 .borrowed_token_balance
                 .checked_sub(amount)
                 .ok_or(Error::ArithmeticError)?;
-            self.vaults.insert((caller, vault_id), &vault);
+            self.save_vault(caller, vault_id, &vault);
 
             self.env().emit_event(TokensRepaid {
                 owner: caller,
@@ -363,19 +331,7 @@ mod vault {
 
         #[ink(message)]
         pub fn release_collateral(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
-            let caller = self.env().caller();
-
-            let mut vault = self
-                .vaults
-                .get((caller, vault_id))
-                .ok_or(Error::VaultNotFound)?;
-
-            if vault.owner != caller {
-                return Err(Error::NotVaultOwner);
-            }
-            if self.liquidation_auctions.get((caller, vault_id)).is_some() {
-                return Err(Error::VaultInLiquidation);
-            }
+            let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             if vault.collateral_balance < amount {
                 return Err(Error::InsufficientCollateral);
@@ -394,7 +350,7 @@ mod vault {
                 .collateral_balance
                 .checked_sub(amount)
                 .ok_or(Error::ArithmeticError)?;
-            self.vaults.insert((caller, vault_id), &vault);
+            self.save_vault(caller, vault_id, &vault);
 
             self.env().emit_event(CollateralReleased {
                 owner: caller,
@@ -416,10 +372,7 @@ mod vault {
                 return Err(Error::LiquidationAuctionExists);
             }
 
-            let mut vault = self
-                .vaults
-                .get((owner, vault_id))
-                .ok_or(Error::VaultNotFound)?;
+            let mut vault = self.load_vault(owner, vault_id)?;
             self.accrue_interest(&mut vault)?;
 
             if !self.is_liquidatable(&vault)? {
@@ -428,7 +381,12 @@ mod vault {
 
             let collateral_debt = vault.borrowed_token_balance;
             let collateral_to_auction = collateral_debt
-                .checked_add(Self::mul_ratio(collateral_debt, LIQUIDATION_FEE_PARTS)?)
+                .checked_add(
+                    self.params
+                        .liquidation_fee
+                        .checked_mul_value(collateral_debt)
+                        .ok_or(Error::ArithmeticError)?,
+                )
                 .ok_or(Error::ArithmeticError)?;
             let auction_id = self
                 .auction
@@ -441,7 +399,7 @@ mod vault {
                 )
                 .map_err(|_| Error::AuctionContractCallFailed)?;
 
-            self.vaults.insert((owner, vault_id), &vault);
+            self.save_vault(owner, vault_id, &vault);
             self.liquidation_auctions
                 .insert((owner, vault_id), &auction_id);
 
@@ -477,10 +435,7 @@ mod vault {
             let winner = auction.highest_bidder;
             let winning_bid = auction.highest_bid;
 
-            let mut vault = self
-                .vaults
-                .get((owner, vault_id))
-                .ok_or(Error::VaultNotFound)?;
+            let mut vault = self.load_vault(owner, vault_id)?;
             let mut collateral_sold = 0;
             let mut debt_cleared = 0;
 
@@ -499,7 +454,7 @@ mod vault {
                 vault.borrowed_token_balance = 0;
             }
 
-            self.vaults.insert((owner, vault_id), &vault);
+            self.save_vault(owner, vault_id, &vault);
             self.liquidation_auctions.remove((owner, vault_id));
 
             self.env().emit_event(VaultLiquidated {
@@ -531,12 +486,8 @@ mod vault {
         }
 
         #[ink(message)]
-        pub fn get_ratios(&self) -> (u32, u32, u32) {
-            (
-                self.collateral_ratio_parts,
-                self.liquidation_ratio_parts,
-                self.interest_rate_parts,
-            )
+        pub fn get_contract_params(&self) -> VaultContractParamsPercentage {
+            Self::contract_params_to_percentages(self.params)
         }
 
         #[ink(message)]
@@ -603,148 +554,6 @@ mod vault {
                 });
 
             Ok(vaults)
-        }
-
-        fn validate_ratios(
-            collateral_ratio_parts: u32,
-            liquidation_ratio_parts: u32,
-            interest_rate_parts: u32,
-        ) -> Result<()> {
-            // Collateral ration should be greater that 100%
-            if (collateral_ratio_parts as u128) < PARTS_PER_BILLION {
-                return Err(Error::InvalidRatio);
-            }
-            // Liquidation ration should be greater than 100%
-            if (liquidation_ratio_parts as u128) < PARTS_PER_BILLION {
-                return Err(Error::InvalidRatio);
-            }
-            // Intrest rate should be less than 100%
-            if (interest_rate_parts as u128) > PARTS_PER_BILLION {
-                return Err(Error::InvalidRatio);
-            }
-            Ok(())
-        }
-
-        fn mul_ratio(value: u128, ratio_parts: u32) -> Result<u128> {
-            value
-                .checked_mul(ratio_parts as u128)
-                .ok_or(Error::ArithmeticError)?
-                .checked_div(PARTS_PER_BILLION)
-                .ok_or(Error::ArithmeticError)
-        }
-
-        fn div_ratio(value: u128, ratio_parts: u32) -> Result<u128> {
-            if ratio_parts == 0 {
-                return Err(Error::InvalidRatio);
-            }
-            value
-                .checked_mul(PARTS_PER_BILLION)
-                .ok_or(Error::ArithmeticError)?
-                .checked_div(ratio_parts as u128)
-                .ok_or(Error::ArithmeticError)
-        }
-
-        fn mul_fixed(value: u128, fixed: u128) -> Result<u128> {
-            value
-                .checked_mul(fixed)
-                .ok_or(Error::ArithmeticError)?
-                .checked_div(FIXED_POINT_SCALAR)
-                .ok_or(Error::ArithmeticError)
-        }
-
-        // e^x with Taylor series
-        fn exp_fixed(exponent: u128) -> Result<u128> {
-            let mut sum = FIXED_POINT_SCALAR;
-            let mut term = FIXED_POINT_SCALAR;
-
-            for n in 1..=32_u128 {
-                term = Self::mul_fixed(term, exponent)?
-                    .checked_div(n)
-                    .ok_or(Error::ArithmeticError)?;
-                if term == 0 {
-                    break;
-                }
-                sum = sum.checked_add(term).ok_or(Error::ArithmeticError)?;
-            }
-
-            Ok(sum)
-        }
-
-        // base ^ exponent by square and multiply.
-        fn pow_fixed(mut base: u128, mut exponent: u128) -> Result<u128> {
-            let mut result = FIXED_POINT_SCALAR;
-
-            while exponent > 0 {
-                if exponent % 2 == 1 {
-                    result = Self::mul_fixed(result, base)?;
-                }
-                exponent /= 2;
-                if exponent > 0 {
-                    base = Self::mul_fixed(base, base)?;
-                }
-            }
-
-            Ok(result)
-        }
-
-        fn max_borrow_allowed(&self, collateral_balance: Balance) -> Result<Balance> {
-            Self::div_ratio(collateral_balance, self.collateral_ratio_parts)
-        }
-
-        fn liquidation_limit(&self, collateral_balance: Balance) -> Result<Balance> {
-            Self::div_ratio(collateral_balance, self.liquidation_ratio_parts)
-        }
-
-        fn is_liquidatable(&self, vault: &Vault) -> Result<bool> {
-            let limit = self.liquidation_limit(vault.collateral_balance)?;
-            Ok(vault.borrowed_token_balance > limit)
-        }
-
-        fn accrue_interest(&self, vault: &mut Vault) -> Result<()> {
-            let now = self.env().block_timestamp();
-            if now <= vault.last_interest_accrued_at {
-                return Ok(());
-            }
-            if vault.borrowed_token_balance == 0 || self.interest_rate_parts == 0 {
-                vault.last_interest_accrued_at = now;
-                return Ok(());
-            }
-
-            // We checked that now > vault.last_interest_accrued_at.
-            #[allow(clippy::arithmetic_side_effects)]
-            let elapsed = (now - vault.last_interest_accrued_at) as u128;
-            let borrowed_days = elapsed
-                .checked_div(SECONDS_PER_DAY as u128)
-                .ok_or(Error::ArithmeticError)?;
-            if borrowed_days == 0 {
-                return Ok(());
-            }
-
-            let daily_exponent = (self.interest_rate_parts as u128)
-                .checked_mul(FIXED_POINT_SCALAR)
-                .ok_or(Error::ArithmeticError)?
-                .checked_div(PARTS_PER_BILLION)
-                .ok_or(Error::ArithmeticError)?
-                .checked_div(DAYS_PER_YEAR)
-                .ok_or(Error::ArithmeticError)?;
-
-            let daily_growth_factor = Self::exp_fixed(daily_exponent)?;
-            let compounded_growth_factor = Self::pow_fixed(daily_growth_factor, borrowed_days)?;
-
-            vault.borrowed_token_balance =
-                Self::mul_fixed(vault.borrowed_token_balance, compounded_growth_factor)?;
-
-            let accrued_seconds = borrowed_days
-                .checked_mul(SECONDS_PER_DAY as u128)
-                .ok_or(Error::ArithmeticError)?
-                .checked_add(vault.last_interest_accrued_at as u128)
-                .ok_or(Error::ArithmeticError)?;
-            if accrued_seconds > u64::MAX as u128 {
-                return Err(Error::ArithmeticError);
-            }
-            vault.last_interest_accrued_at = accrued_seconds as u64;
-
-            Ok(())
         }
     }
 }

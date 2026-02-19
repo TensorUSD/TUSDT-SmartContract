@@ -6983,6 +6983,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tusdt-primitives"
+version = "0.1.0"
+dependencies = [
+ "ink",
+ "sp-arithmetic",
+]
+
+[[package]]
 name = "tusdt-vault"
 version = "0.1.0"
 dependencies = [
@@ -6990,6 +6998,7 @@ dependencies = [
  "ink_e2e",
  "tusdt-auction",
  "tusdt-erc20",
+ "tusdt-primitives",
 ]
 
 [[package]]
