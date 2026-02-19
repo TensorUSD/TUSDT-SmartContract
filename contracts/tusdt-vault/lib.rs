@@ -15,7 +15,8 @@ mod vault {
 
     const DEFAULT_COLLATERAL_RATIO_PARTS: u32 = 1_500_000_000; // 150%
     const DEFAULT_LIQUIDATION_RATIO_PARTS: u32 = 1_200_000_000; // 120%
-    const DEFAULT_INTEREST_RATE_PARTS: u32 = 50_000_000; // 5% APR
+    const DEFAULT_INTEREST_RATE_PARTS: u32 = 50_000_000; // 5%
+    const LIQUIDATION_FEE_PARTS: u32 = 10_000_000; // 1 %
 
     const SECONDS_PER_YEAR: u128 = 31_536_000;
 
@@ -423,12 +424,16 @@ mod vault {
                 return Err(Error::NotLiquidatable);
             }
 
+            let collateral_debt = vault.borrowed_token_balance;
+            let collateral_to_auction = collateral_debt
+                .checked_add(Self::mul_ratio(collateral_debt, LIQUIDATION_FEE_PARTS)?)
+                .ok_or(Error::ArithmeticError)?;
             let auction_id = self
                 .auction
                 .create_auction(
                     owner,
                     vault_id,
-                    vault.collateral_balance,
+                    collateral_to_auction,
                     vault.borrowed_token_balance,
                     duration_secs,
                 )
