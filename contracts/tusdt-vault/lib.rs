@@ -68,6 +68,9 @@ mod vault {
         token: TusdtErc20Ref,
         // Auction contract address
         auction: TusdtAuctionRef,
+        // TEMPORARY: test-only collateral price oracle replacement.
+        // Represents borrow-token units per 1 collateral token.
+        collateral_token_price: Balance,
 
         params: VaultContractParams,
 
@@ -200,6 +203,7 @@ mod vault {
                 owner,
                 token,
                 auction,
+                collateral_token_price: 1,
                 params,
                 vaults: Mapping::default(),
                 vault_count: Mapping::default(),
@@ -381,7 +385,10 @@ mod vault {
                 return Err(Error::NotLiquidatable);
             }
 
-            let collateral_debt = vault.borrowed_token_balance;
+            let collateral_debt = vault
+                .borrowed_token_balance
+                .checked_div(self.collateral_token_price)
+                .ok_or(Error::ArithmeticError)?;
             let collateral_to_auction = collateral_debt
                 .checked_add(
                     self.params
@@ -490,6 +497,23 @@ mod vault {
         #[ink(message)]
         pub fn get_contract_params(&self) -> VaultContractParamsPercentage {
             Self::contract_params_to_percentages(self.params)
+        }
+
+        #[ink(message)]
+        pub fn set_collateral_token_price_for_testing(&mut self, price: Balance) -> Result<()> {
+            if self.env().caller() != self.owner {
+                return Err(Error::NotContractOwner);
+            }
+            if price == 0 {
+                return Err(Error::InvalidRatio);
+            }
+            self.collateral_token_price = price;
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn get_collateral_token_price_for_testing(&self) -> Balance {
+            self.collateral_token_price
         }
 
         #[ink(message)]

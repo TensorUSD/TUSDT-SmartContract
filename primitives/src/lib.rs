@@ -51,6 +51,7 @@ impl Ratio {
         self.as_fixed().checked_mul_int(value)
     }
 
+    /// Value / self
     pub fn checked_div_value(self, value: u128) -> Option<u128> {
         let value_fixed = FixedU128::checked_from_integer(value)?;
         value_fixed
@@ -58,6 +59,7 @@ impl Ratio {
             .checked_mul_int(1_u128)
     }
 
+    /// self / rhs
     pub fn checked_div_int(self, rhs: u128) -> Option<Self> {
         let rhs_fixed = FixedU128::checked_from_integer(rhs)?;
         self.as_fixed()
