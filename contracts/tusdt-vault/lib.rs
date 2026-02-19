@@ -6,10 +6,10 @@ mod vault {
     use ink::prelude::vec::Vec;
     use ink::storage::{Mapping, StorageVec};
     use ink::ToAccountId;
-    use tusdt_primitives::Ratio;
 
     use tusdt_auction::TusdtAuctionRef;
     use tusdt_erc20::TusdtErc20Ref;
+    use tusdt_primitives::Ratio;
 
     const PAGE_SIZE: u32 = 10;
 

@@ -46,7 +46,10 @@ impl TusdtVault {
         if accrued_seconds > u64::MAX as u128 {
             return Err(Error::ArithmeticError);
         }
-        vault.last_interest_accrued_at = accrued_seconds as u64;
+        // We alread check max value
+        #[allow(clippy::cast_possible_truncation)]
+        let accrued_seconds = accrued_seconds as u64;
+        vault.last_interest_accrued_at = accrued_seconds;
 
         Ok(())
     }

@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 ink = { workspace = true, default-features = false }
-tusdt-primitives = { workspace = true, default-features = false }
+tusdt-primitives = { path = "../../primitives", default-features = false }
 tusdt-auction = { path = "../tusdt-auction", default-features = false, features = [
     "ink-as-dependency",
 ] }
@@ -22,6 +22,11 @@ path = "lib.rs"
 
 [features]
 default = ["std"]
-std = ["ink/std", "tusdt-primitives/std", "tusdt-auction/std", "tusdt-erc20/std"]
+std = [
+    "ink/std",
+    "tusdt-primitives/std",
+    "tusdt-auction/std",
+    "tusdt-erc20/std",
+]
 ink-as-dependency = []
 e2e-tests = []
