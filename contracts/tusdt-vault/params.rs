@@ -4,6 +4,7 @@ const DEFAULT_COLLATERAL_RATIO_PERCENT: u32 = 150;
 const DEFAULT_LIQUIDATION_RATIO_PERCENT: u32 = 120;
 const DEFAULT_INTEREST_RATE_PERCENT: u32 = 5;
 const DEFAULT_LIQUIDATION_FEE_PERCENT: u32 = 1;
+const DEFAULT_AUCTION_DURATION_SECS: u64 = 3_600;
 
 impl TusdtVault {
     pub(crate) fn default_contract_params() -> VaultContractParams {
@@ -12,6 +13,7 @@ impl TusdtVault {
             liquidation_ratio: Ratio::from_percentage(DEFAULT_LIQUIDATION_RATIO_PERCENT),
             interest_rate: Ratio::from_percentage(DEFAULT_INTEREST_RATE_PERCENT),
             liquidation_fee: Ratio::from_percentage(DEFAULT_LIQUIDATION_FEE_PERCENT),
+            auction_duration_secs: DEFAULT_AUCTION_DURATION_SECS,
         };
         Self::validate_contract_params(&params)
             .expect("default vault contract params should be valid");
@@ -26,6 +28,7 @@ impl TusdtVault {
             liquidation_ratio: Ratio::from_percentage(params.liquidation_ratio),
             interest_rate: Ratio::from_percentage(params.interest_rate),
             liquidation_fee: Ratio::from_percentage(params.liquidation_fee),
+            auction_duration_secs: params.auction_duration_secs,
         };
         Self::validate_contract_params(&ratio_params)?;
         Ok(ratio_params)
@@ -51,6 +54,7 @@ impl TusdtVault {
                 .liquidation_fee
                 .to_percentage()
                 .expect("stored liquidation fee should fit in u32 percentage"),
+            auction_duration_secs: params.auction_duration_secs,
         }
     }
 
@@ -71,6 +75,9 @@ impl TusdtVault {
         // Liquidation fee should be less than or equal to 100%.
         if params.liquidation_fee > one {
             return Err(Error::InvalidRatio);
+        }
+        if params.auction_duration_secs == 60 {
+            return Err(Error::InvalidAuctionDuration);
         }
         Ok(())
     }

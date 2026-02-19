@@ -72,7 +72,7 @@ cargo contract instantiate \
 - Implementation computes daily growth and compounds by elapsed full days.
 
 ### 3) Liquidation flow
-1. Anyone can call `trigger_liquidation_auction(owner, vault_id, duration_secs)` when vault exceeds liquidation threshold.
+1. Anyone can call `trigger_liquidation_auction(owner, vault_id)` when vault exceeds liquidation threshold.
 2. Auction contract creates an auction tied to that vault.
 3. Bidders approve token allowance to auction contract, then call `place_bid`.
 4. After end time, call `finalize_auction` on auction contract.
@@ -84,12 +84,14 @@ cargo contract instantiate \
   - `liquidation_ratio`
   - `interest_rate`
   - `liquidation_fee`
+  - `auction_duration_secs`
 
 Default params:
 - Collateral ratio: `150%`
 - Liquidation ratio: `120%`
 - Interest rate: `5%`
 - Liquidation fee: `1%`
+- Auction duration: `3600` seconds
 
 ## Useful Read Methods
 - Vault: `get_vault`, `get_contract_params`, `get_vaults`, `get_all_vaults`

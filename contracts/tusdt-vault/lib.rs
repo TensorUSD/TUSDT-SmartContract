@@ -46,6 +46,7 @@ mod vault {
         pub liquidation_ratio: Ratio,
         pub interest_rate: Ratio,
         pub liquidation_fee: Ratio,
+        pub auction_duration_secs: u64,
     }
 
     #[derive(Debug, Copy, Clone)]
@@ -56,6 +57,7 @@ mod vault {
         pub liquidation_ratio: u32,
         pub interest_rate: u32,
         pub liquidation_fee: u32,
+        pub auction_duration_secs: u64,
     }
 
     #[ink(storage)]
@@ -159,6 +161,7 @@ mod vault {
         TokenBorrowedNotZero,
         OutOfBoundPage,
         InvalidRatio,
+        InvalidAuctionDuration,
         MaxBorrowExceeded,
         LiquidationRatioExceeded,
         RepayAmountTooHigh,
@@ -366,7 +369,6 @@ mod vault {
             &mut self,
             owner: AccountId,
             vault_id: u32,
-            duration_secs: Option<u64>,
         ) -> Result<u64> {
             if self.liquidation_auctions.get((owner, vault_id)).is_some() {
                 return Err(Error::LiquidationAuctionExists);
@@ -395,7 +397,7 @@ mod vault {
                     vault_id,
                     collateral_to_auction,
                     vault.borrowed_token_balance,
-                    duration_secs,
+                    Some(self.params.auction_duration_secs),
                 )
                 .map_err(|_| Error::AuctionContractCallFailed)?;
 
