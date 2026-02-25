@@ -4,10 +4,12 @@ pub use self::auction::{Auction, Bid, TusdtAuction, TusdtAuctionRef};
 
 #[ink::contract]
 mod auction {
-    use ink::{env::call::FromAccountId, storage::Mapping};
+    use core::cmp::min;
+    use ink::{env::call::FromAccountId, prelude::vec::Vec, storage::Mapping};
 
     use tusdt_erc20::TusdtErc20Ref;
 
+    const PAGE_SIZE: u64 = 10;
     const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
 
     #[derive(Debug, Clone)]
@@ -48,8 +50,12 @@ mod auction {
 
         auction_count: u64,
         auctions: Mapping<u64, Auction>,
-        active_vault_auction: Mapping<(AccountId, u32), u64>,
         auction_bids: Mapping<(u64, u64), Bid>,
+
+        active_vault_auction: Mapping<(AccountId, u32), u64>,
+        active_auction_count: u64,
+        active_auctions: Mapping<u64, u64>,
+        active_auction_indices: Mapping<u64, u64>,
     }
 
     #[ink(event)]
@@ -103,6 +109,7 @@ mod auction {
         AuctionEnded,
         AuctionNotEnded,
         AuctionFinalized,
+        OutOfBoundPage,
         WinningBidLocked,
         InvalidDuration,
         TransferFailed,
@@ -119,10 +126,15 @@ mod auction {
             Self {
                 owner,
                 token,
+
                 auction_count: 0,
                 auctions: Mapping::default(),
-                active_vault_auction: Mapping::default(),
                 auction_bids: Mapping::default(),
+
+                active_vault_auction: Mapping::default(),
+                active_auction_count: 0,
+                active_auctions: Mapping::default(),
+                active_auction_indices: Mapping::default(),
             }
         }
 
@@ -174,6 +186,14 @@ mod auction {
             };
 
             self.auctions.insert(auction_id, &auction);
+            let active_index = self.active_auction_count;
+            self.active_auctions.insert(active_index, &auction_id);
+            self.active_auction_indices
+                .insert(auction_id, &active_index);
+            self.active_auction_count = self
+                .active_auction_count
+                .checked_add(1)
+                .ok_or(Error::ArithmeticError)?;
             self.active_vault_auction
                 .insert((vault_owner, vault_id), &auction_id);
 
@@ -259,6 +279,7 @@ mod auction {
             auction.is_finalized = true;
             self.active_vault_auction
                 .remove((auction.vault_owner, auction.vault_id));
+            self.remove_active_auction(auction_id)?;
 
             let winner = auction.highest_bidder;
             let highest_bid = auction.highest_bid;
@@ -336,8 +357,77 @@ mod auction {
         }
 
         #[ink(message)]
-        pub fn owner(&self) -> AccountId {
-            self.owner
+        pub fn get_total_auctions_count(&self) -> u64 {
+            self.auction_count
+        }
+
+        #[ink(message)]
+        pub fn get_active_auctions_count(&self) -> u64 {
+            self.active_auction_count
+        }
+
+        #[ink(message)]
+        pub fn get_all_auctions(&self, page: u32) -> Result<Vec<Auction>> {
+            let total_auctions = self.auction_count;
+            let start = u64::from(page).saturating_mul(PAGE_SIZE);
+            if start >= total_auctions {
+                return Err(Error::OutOfBoundPage);
+            }
+            let end = min(start.saturating_add(PAGE_SIZE), total_auctions);
+
+            let mut auctions = Vec::new();
+            for auction_id in start..end {
+                let auction = self.auctions.get(auction_id);
+                auctions.push(auction.expect("should be present"));
+            }
+
+            Ok(auctions)
+        }
+
+        #[ink(message)]
+        pub fn get_active_auctions(&self, page: u32) -> Result<Vec<Auction>> {
+            let total_active_auctions = self.active_auction_count;
+            let start = u64::from(page).saturating_mul(PAGE_SIZE);
+            if start >= total_active_auctions {
+                return Err(Error::OutOfBoundPage);
+            }
+            let end = min(start.saturating_add(PAGE_SIZE), total_active_auctions);
+
+            let mut auctions = Vec::new();
+            for index in start..end {
+                let auction_id = self.active_auctions.get(index).expect("should be present");
+                let auction = self.auctions.get(auction_id).expect("should be present");
+                auctions.push(auction);
+            }
+
+            Ok(auctions)
+        }
+
+        fn remove_active_auction(&mut self, auction_id: u64) -> Result<()> {
+            let active_index = self
+                .active_auction_indices
+                .get(auction_id)
+                .ok_or(Error::AuctionNotFound)?;
+            let last_index = self
+                .active_auction_count
+                .checked_sub(1)
+                .ok_or(Error::ArithmeticError)?;
+
+            if active_index != last_index {
+                let last_auction_id = self
+                    .active_auctions
+                    .get(last_index)
+                    .ok_or(Error::AuctionNotFound)?;
+                self.active_auctions.insert(active_index, &last_auction_id);
+                self.active_auction_indices
+                    .insert(last_auction_id, &active_index);
+            }
+
+            self.active_auctions.remove(last_index);
+            self.active_auction_indices.remove(auction_id);
+            self.active_auction_count = last_index;
+
+            Ok(())
         }
 
         #[inline]
@@ -346,6 +436,11 @@ mod auction {
                 return Err(Error::NotOwner);
             }
             Ok(())
+        }
+
+        #[ink(message)]
+        pub fn owner(&self) -> AccountId {
+            self.owner
         }
     }
 }

@@ -95,7 +95,7 @@ Default params:
 
 ## Useful Read Methods
 - Vault: `get_vault`, `get_contract_params`, `get_vaults`, `get_all_vaults`
-- Auction: `get_auction`, `get_active_vault_auction`, `get_bid`
+- Auction: `get_auction`, `get_active_vault_auction`, `get_bid`, `get_all_auctions`, `get_active_auctions`
 - Token: `balance_of`, `allowance`, `total_supply`
 
 ## Notes
