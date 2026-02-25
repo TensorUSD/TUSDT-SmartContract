@@ -552,10 +552,10 @@ mod vault {
             let end = min(start.saturating_add(PAGE_SIZE), total_owner_vaults);
 
             let mut vaults = Vec::new();
-            let _ = (start..end).map(|index| {
+            for index in start..end {
                 let vault = self.vaults.get((owner, index));
                 vaults.push(vault.expect("should be present"));
-            });
+            }
 
             Ok(vaults)
         }
