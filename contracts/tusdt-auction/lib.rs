@@ -99,6 +99,7 @@ mod auction {
         BidNotFound,
         NotBidder,
         AuctionAlreadyExistsForVault,
+        BidBelowDebtBalance,
         AuctionEnded,
         AuctionNotEnded,
         AuctionFinalized,
@@ -201,6 +202,9 @@ mod auction {
             }
             if self.env().block_timestamp() >= auction.ends_at {
                 return Err(Error::AuctionEnded);
+            }
+            if bid_amount < auction.debt_balance {
+                return Err(Error::BidBelowDebtBalance);
             }
 
             let bid_id = auction.bid_count;
