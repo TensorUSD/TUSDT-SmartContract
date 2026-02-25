@@ -188,7 +188,7 @@ mod auction {
             Ok(auction_id)
         }
 
-        #[ink(message, payable)]
+        #[ink(message)]
         pub fn place_bid(&mut self, auction_id: u64, bid_amount: Balance) -> Result<u64> {
             let bidder = self.env().caller();
 
