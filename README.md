@@ -84,14 +84,14 @@ cargo contract instantiate \
   - `liquidation_ratio`
   - `interest_rate`
   - `liquidation_fee`
-  - `auction_duration_secs`
+  - `auction_duration_ms`
 
 Default params:
 - Collateral ratio: `150%`
 - Liquidation ratio: `120%`
 - Interest rate: `5%`
 - Liquidation fee: `1%`
-- Auction duration: `3600` seconds
+- Auction duration: `3_600_000` milliseconds
 
 ## Useful Read Methods
 - Vault: `get_vault`, `get_contract_params`, `get_vaults`, `get_all_vaults`

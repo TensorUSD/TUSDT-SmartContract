@@ -1,6 +1,6 @@
 use super::*;
 use ink::codegen::Env as _;
-use tusdt_primitives::{DAYS_PER_YEAR, SECONDS_PER_DAY};
+use tusdt_primitives::{DAYS_PER_YEAR, MILLISECONDS_PER_DAY};
 
 impl TusdtVault {
     pub(crate) fn accrue_interest(&self, vault: &mut Vault) -> Result<()> {
@@ -17,7 +17,7 @@ impl TusdtVault {
         #[allow(clippy::arithmetic_side_effects)]
         let elapsed = (now - vault.last_interest_accrued_at) as u128;
         let borrowed_days = elapsed
-            .checked_div(SECONDS_PER_DAY as u128)
+            .checked_div(MILLISECONDS_PER_DAY as u128)
             .ok_or(Error::ArithmeticError)?;
         if borrowed_days == 0 {
             return Ok(());
@@ -38,18 +38,18 @@ impl TusdtVault {
             .checked_mul_value(vault.borrowed_token_balance)
             .ok_or(Error::ArithmeticError)?;
 
-        let accrued_seconds = borrowed_days
-            .checked_mul(SECONDS_PER_DAY as u128)
+        let accrued_milliseconds = borrowed_days
+            .checked_mul(MILLISECONDS_PER_DAY as u128)
             .ok_or(Error::ArithmeticError)?
             .checked_add(vault.last_interest_accrued_at as u128)
             .ok_or(Error::ArithmeticError)?;
-        if accrued_seconds > u64::MAX as u128 {
+        if accrued_milliseconds > u64::MAX as u128 {
             return Err(Error::ArithmeticError);
         }
-        // We alread check max value
+        // We already check max value
         #[allow(clippy::cast_possible_truncation)]
-        let accrued_seconds = accrued_seconds as u64;
-        vault.last_interest_accrued_at = accrued_seconds;
+        let accrued_milliseconds = accrued_milliseconds as u64;
+        vault.last_interest_accrued_at = accrued_milliseconds;
 
         Ok(())
     }

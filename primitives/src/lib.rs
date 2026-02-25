@@ -4,7 +4,9 @@ use sp_arithmetic::fixed_point::FixedPointNumber;
 use sp_arithmetic::traits::{CheckedAdd, CheckedDiv, CheckedMul, One, Zero};
 use sp_arithmetic::FixedU128;
 
+pub const MILLISECONDS_PER_SECOND: u64 = 1_000;
 pub const SECONDS_PER_DAY: u64 = 86_400;
+pub const MILLISECONDS_PER_DAY: u64 = SECONDS_PER_DAY * MILLISECONDS_PER_SECOND;
 pub const DAYS_PER_YEAR: u128 = 365;
 const FIXED_SCALE: u128 = <FixedU128 as FixedPointNumber>::DIV;
 

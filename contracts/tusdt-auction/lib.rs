@@ -8,7 +8,7 @@ mod auction {
 
     use tusdt_erc20::TusdtErc20Ref;
 
-    const DEFAULT_AUCTION_DURATION_SECS: u64 = 3_600;
+    const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
 
     #[derive(Debug, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
@@ -132,7 +132,7 @@ mod auction {
             vault_id: u32,
             collateral_balance: Balance,
             debt_balance: Balance,
-            duration_secs: Option<u64>,
+            duration_ms: Option<u64>,
         ) -> Result<u64> {
             self.ensure_owner()?;
 
@@ -144,7 +144,7 @@ mod auction {
                 return Err(Error::AuctionAlreadyExistsForVault);
             }
 
-            let duration = duration_secs.unwrap_or(DEFAULT_AUCTION_DURATION_SECS);
+            let duration = duration_ms.unwrap_or(DEFAULT_AUCTION_DURATION_MS);
             if duration == 0 {
                 return Err(Error::InvalidDuration);
             }
