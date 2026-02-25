@@ -528,6 +528,36 @@ mod vault {
         }
 
         #[ink(message)]
+        pub fn get_vault_collateral_value(
+            &self,
+            owner: AccountId,
+            vault_id: u32,
+        ) -> Result<Balance> {
+            let vault = self
+                .vaults
+                .get((owner, vault_id))
+                .ok_or(Error::VaultNotFound)?;
+
+            let collateral_value = self
+                .collateral_token_price
+                .checked_mul(vault.collateral_balance)
+                .ok_or(Error::ArithmeticError)?;
+
+            Ok(collateral_value)
+        }
+
+        #[ink(message)]
+        pub fn get_max_borrow(&self, owner: AccountId, vault_id: u32) -> Result<Balance> {
+            let vault = self
+                .vaults
+                .get((owner, vault_id))
+                .ok_or(Error::VaultNotFound)?;
+            let max = self.max_borrow_allowed(vault.collateral_balance)?;
+
+            Ok(max)
+        }
+
+        #[ink(message)]
         pub fn get_liquidation_auction_id(&self, owner: AccountId, vault_id: u32) -> Option<u64> {
             self.liquidation_auctions.get((owner, vault_id))
         }
