@@ -16,6 +16,7 @@ mod auction {
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub struct Auction {
+        pub id: u32,
         pub vault_owner: AccountId,
         pub vault_id: u32,
 
@@ -37,6 +38,7 @@ mod auction {
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub struct Bid {
+        pub id: u32,
         pub auction_id: u32,
         pub bidder: AccountId,
         pub amount: Balance,
@@ -172,6 +174,7 @@ mod auction {
                 .ok_or(Error::ArithmeticError)?;
 
             let auction = Auction {
+                id: auction_id,
                 vault_owner,
                 vault_id,
                 collateral_balance,
@@ -234,6 +237,7 @@ mod auction {
                 .ok_or(Error::ArithmeticError)?;
 
             let bid = Bid {
+                id: bid_id,
                 auction_id,
                 bidder,
                 amount: bid_amount,
