@@ -165,7 +165,7 @@ mod vault {
         OutOfBoundPage,
         InvalidRatio,
         InvalidAuctionDuration,
-        MaxBorrowExceeded,
+        CollateralRatioExceeded,
         LiquidationRatioExceeded,
         RepayAmountTooHigh,
         VaultInLiquidation,
@@ -289,7 +289,7 @@ mod vault {
                 .checked_add(amount)
                 .ok_or(Error::ArithmeticError)?;
             if projected_borrowed > max_borrow {
-                return Err(Error::MaxBorrowExceeded);
+                return Err(Error::CollateralRatioExceeded);
             }
 
             self.token
@@ -345,18 +345,20 @@ mod vault {
             }
 
             self.accrue_interest(&mut vault)?;
-            if vault.borrowed_token_balance > 0 {
-                return Err(Error::TokenBorrowedNotZero);
+            let projected_collateral = vault
+                .collateral_balance
+                .checked_sub(amount)
+                .ok_or(Error::ArithmeticError)?;
+            let max_borrow_after_release = self.max_borrow_allowed(projected_collateral)?;
+            if vault.borrowed_token_balance > max_borrow_after_release {
+                return Err(Error::CollateralRatioExceeded);
             }
 
             if self.env().transfer(caller, amount).is_err() {
                 return Err(Error::TransferFailed);
             }
 
-            vault.collateral_balance = vault
-                .collateral_balance
-                .checked_sub(amount)
-                .ok_or(Error::ArithmeticError)?;
+            vault.collateral_balance = projected_collateral;
             self.save_vault(caller, vault_id, &vault);
 
             self.env().emit_event(CollateralReleased {
