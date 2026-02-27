@@ -361,6 +361,29 @@ mod auction {
         }
 
         #[ink(message)]
+        pub fn get_bids(&self, auction_id: u32, page: u32) -> Result<Vec<Bid>> {
+            let auction = self
+                .auctions
+                .get(auction_id)
+                .ok_or(Error::AuctionNotFound)?;
+
+            let total_bids = auction.bid_count;
+            let start = page.saturating_mul(PAGE_SIZE);
+            if start >= total_bids {
+                return Err(Error::OutOfBoundPage);
+            }
+            let end = min(start.saturating_add(PAGE_SIZE), total_bids);
+
+            let mut bids = Vec::new();
+            for bid_id in start..end {
+                let bid = self.auction_bids.get((auction_id, bid_id));
+                bids.push(bid.expect("should be present"));
+            }
+
+            Ok(bids)
+        }
+
+        #[ink(message)]
         pub fn get_total_auctions_count(&self) -> u32 {
             self.auction_count
         }
