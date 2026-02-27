@@ -9,7 +9,7 @@ mod auction {
 
     use tusdt_erc20::TusdtErc20Ref;
 
-    const PAGE_SIZE: u64 = 10;
+    const PAGE_SIZE: u32 = 10;
     const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
 
     #[derive(Debug, Clone)]
@@ -27,8 +27,8 @@ mod auction {
 
         pub highest_bidder: Option<AccountId>,
         pub highest_bid: Balance,
-        pub highest_bid_id: Option<u64>,
-        pub bid_count: u64,
+        pub highest_bid_id: Option<u32>,
+        pub bid_count: u32,
 
         pub is_finalized: bool,
     }
@@ -37,7 +37,7 @@ mod auction {
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub struct Bid {
-        pub auction_id: u64,
+        pub auction_id: u32,
         pub bidder: AccountId,
         pub amount: Balance,
         pub is_withdrawn: bool,
@@ -48,20 +48,20 @@ mod auction {
         owner: AccountId,
         token: TusdtErc20Ref,
 
-        auction_count: u64,
-        auctions: Mapping<u64, Auction>,
-        auction_bids: Mapping<(u64, u64), Bid>,
+        auction_count: u32,
+        auctions: Mapping<u32, Auction>,
+        auction_bids: Mapping<(u32, u32), Bid>,
 
-        active_vault_auction: Mapping<(AccountId, u32), u64>,
-        active_auction_count: u64,
-        active_auctions: Mapping<u64, u64>,
-        active_auction_indices: Mapping<u64, u64>,
+        active_vault_auction: Mapping<(AccountId, u32), u32>,
+        active_auction_count: u32,
+        active_auctions: Mapping<u32, u32>,
+        active_auction_indices: Mapping<u32, u32>,
     }
 
     #[ink(event)]
     pub struct AuctionCreated {
         #[ink(topic)]
-        auction_id: u64,
+        auction_id: u32,
         #[ink(topic)]
         vault_owner: AccountId,
         #[ink(topic)]
@@ -73,9 +73,9 @@ mod auction {
     #[ink(event)]
     pub struct BidPlaced {
         #[ink(topic)]
-        auction_id: u64,
+        auction_id: u32,
         #[ink(topic)]
-        bid_id: u64,
+        bid_id: u32,
         #[ink(topic)]
         bidder: AccountId,
         amount: Balance,
@@ -84,7 +84,7 @@ mod auction {
     #[ink(event)]
     pub struct AuctionFinalized {
         #[ink(topic)]
-        auction_id: u64,
+        auction_id: u32,
         #[ink(topic)]
         winner: Option<AccountId>,
         highest_bid: Balance,
@@ -146,7 +146,7 @@ mod auction {
             collateral_balance: Balance,
             debt_balance: Balance,
             duration_ms: Option<u64>,
-        ) -> Result<u64> {
+        ) -> Result<u32> {
             self.ensure_owner()?;
 
             if self
@@ -209,7 +209,7 @@ mod auction {
         }
 
         #[ink(message)]
-        pub fn place_bid(&mut self, auction_id: u64, bid_amount: Balance) -> Result<u64> {
+        pub fn place_bid(&mut self, auction_id: u32, bid_amount: Balance) -> Result<u32> {
             let bidder = self.env().caller();
 
             let mut auction = self
@@ -263,7 +263,7 @@ mod auction {
         }
 
         #[ink(message)]
-        pub fn finalize_auction(&mut self, auction_id: u64) -> Result<()> {
+        pub fn finalize_auction(&mut self, auction_id: u32) -> Result<()> {
             let mut auction = self
                 .auctions
                 .get(auction_id)
@@ -295,7 +295,7 @@ mod auction {
         }
 
         #[ink(message)]
-        pub fn withdraw_refund(&mut self, auction_id: u64, bid_id: u64) -> Result<()> {
+        pub fn withdraw_refund(&mut self, auction_id: u32, bid_id: u32) -> Result<()> {
             let caller = self.env().caller();
             let mut bid = self
                 .auction_bids
@@ -338,7 +338,7 @@ mod auction {
         }
 
         #[ink(message)]
-        pub fn get_auction(&self, auction_id: u64) -> Option<Auction> {
+        pub fn get_auction(&self, auction_id: u32) -> Option<Auction> {
             self.auctions.get(auction_id)
         }
 
@@ -347,29 +347,29 @@ mod auction {
             &self,
             vault_owner: AccountId,
             vault_id: u32,
-        ) -> Option<u64> {
+        ) -> Option<u32> {
             self.active_vault_auction.get((vault_owner, vault_id))
         }
 
         #[ink(message)]
-        pub fn get_bid(&self, auction_id: u64, bid_id: u64) -> Option<Bid> {
+        pub fn get_bid(&self, auction_id: u32, bid_id: u32) -> Option<Bid> {
             self.auction_bids.get((auction_id, bid_id))
         }
 
         #[ink(message)]
-        pub fn get_total_auctions_count(&self) -> u64 {
+        pub fn get_total_auctions_count(&self) -> u32 {
             self.auction_count
         }
 
         #[ink(message)]
-        pub fn get_active_auctions_count(&self) -> u64 {
+        pub fn get_active_auctions_count(&self) -> u32 {
             self.active_auction_count
         }
 
         #[ink(message)]
         pub fn get_all_auctions(&self, page: u32) -> Result<Vec<Auction>> {
             let total_auctions = self.auction_count;
-            let start = u64::from(page).saturating_mul(PAGE_SIZE);
+            let start = page.saturating_mul(PAGE_SIZE);
             if start >= total_auctions {
                 return Err(Error::OutOfBoundPage);
             }
@@ -387,7 +387,7 @@ mod auction {
         #[ink(message)]
         pub fn get_active_auctions(&self, page: u32) -> Result<Vec<Auction>> {
             let total_active_auctions = self.active_auction_count;
-            let start = u64::from(page).saturating_mul(PAGE_SIZE);
+            let start = page.saturating_mul(PAGE_SIZE);
             if start >= total_active_auctions {
                 return Err(Error::OutOfBoundPage);
             }
@@ -403,7 +403,7 @@ mod auction {
             Ok(auctions)
         }
 
-        fn remove_active_auction(&mut self, auction_id: u64) -> Result<()> {
+        fn remove_active_auction(&mut self, auction_id: u32) -> Result<()> {
             let active_index = self
                 .active_auction_indices
                 .get(auction_id)

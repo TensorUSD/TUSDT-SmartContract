@@ -77,7 +77,7 @@ mod vault {
         vaults: Mapping<(AccountId, u32), Vault>,
         vault_count: Mapping<AccountId, u32>,
         vault_keys: StorageVec<(AccountId, u32)>,
-        liquidation_auctions: Mapping<(AccountId, u32), u64>,
+        liquidation_auctions: Mapping<(AccountId, u32), u32>,
     }
 
     #[ink(event)]
@@ -137,7 +137,7 @@ mod vault {
         #[ink(topic)]
         vault_id: u32,
         #[ink(topic)]
-        auction_id: u64,
+        auction_id: u32,
     }
 
     #[ink(event)]
@@ -147,7 +147,7 @@ mod vault {
         #[ink(topic)]
         vault_id: u32,
         #[ink(topic)]
-        auction_id: u64,
+        auction_id: u32,
         winner: Option<AccountId>,
         winning_bid: Balance,
         collateral_sold: Balance,
@@ -373,7 +373,7 @@ mod vault {
             &mut self,
             owner: AccountId,
             vault_id: u32,
-        ) -> Result<u64> {
+        ) -> Result<u32> {
             if self.liquidation_auctions.get((owner, vault_id)).is_some() {
                 return Err(Error::LiquidationAuctionExists);
             }
@@ -558,7 +558,7 @@ mod vault {
         }
 
         #[ink(message)]
-        pub fn get_liquidation_auction_id(&self, owner: AccountId, vault_id: u32) -> Option<u64> {
+        pub fn get_liquidation_auction_id(&self, owner: AccountId, vault_id: u32) -> Option<u32> {
             self.liquidation_auctions.get((owner, vault_id))
         }
 
@@ -600,14 +600,11 @@ mod vault {
             let end = min(start.saturating_add(PAGE_SIZE), total_vaults);
 
             let mut vaults = Vec::new();
-            (start..end)
-                .map(|index| self.vault_keys.get(index))
-                .for_each(|key| {
-                    if let Some(key) = key {
-                        let vault = self.vaults.get(key);
-                        vaults.push(vault.expect("should be present"));
-                    }
-                });
+            for index in start..end {
+                let key = self.vault_keys.get(index).expect("should be present");
+                let vault = self.vaults.get(key);
+                vaults.push(vault.expect("should be present"));
+            }
 
             Ok(vaults)
         }
