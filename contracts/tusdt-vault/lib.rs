@@ -71,6 +71,7 @@ mod vault {
         // TEMPORARY: test-only collateral price oracle replacement.
         // Represents borrow-token units per 1 collateral token.
         collateral_token_price: Balance,
+        total_collateral_balance: Balance,
 
         params: VaultContractParams,
 
@@ -204,6 +205,7 @@ mod vault {
                 token,
                 auction,
                 collateral_token_price: 1,
+                total_collateral_balance: 0,
                 params,
                 vaults: Mapping::default(),
                 vault_count: Mapping::default(),
@@ -244,6 +246,10 @@ mod vault {
 
             self.vaults.insert((caller, vault_id), &vault);
             self.vault_keys.push(&(caller, vault_id));
+            self.total_collateral_balance = self
+                .total_collateral_balance
+                .checked_add(amount)
+                .ok_or(Error::ArithmeticError)?;
 
             let next_id = vault_id.checked_add(1).ok_or(Error::ArithmeticError)?;
             self.vault_count.insert(caller, &next_id);
@@ -264,6 +270,10 @@ mod vault {
 
             vault.collateral_balance = vault
                 .collateral_balance
+                .checked_add(amount)
+                .ok_or(Error::ArithmeticError)?;
+            self.total_collateral_balance = self
+                .total_collateral_balance
                 .checked_add(amount)
                 .ok_or(Error::ArithmeticError)?;
             self.save_vault(caller, vault_id, &vault);
@@ -358,6 +368,10 @@ mod vault {
                 return Err(Error::TransferFailed);
             }
 
+            self.total_collateral_balance = self
+                .total_collateral_balance
+                .checked_sub(amount)
+                .ok_or(Error::ArithmeticError)?;
             vault.collateral_balance = projected_collateral;
             self.save_vault(caller, vault_id, &vault);
 
@@ -462,6 +476,8 @@ mod vault {
                     .map_err(|_| Error::TransferFailed)?;
 
                 vault.collateral_balance = vault.collateral_balance.saturating_sub(collateral_sold);
+                self.total_collateral_balance =
+                    self.total_collateral_balance.saturating_sub(collateral_sold);
                 vault.borrowed_token_balance = 0;
             }
 
@@ -527,6 +543,11 @@ mod vault {
             self.vaults
                 .get((owner, vault_id))
                 .map(|v| v.collateral_balance)
+        }
+
+        #[ink(message)]
+        pub fn get_total_collateral_balance(&self) -> Balance {
+            self.total_collateral_balance
         }
 
         #[ink(message)]
