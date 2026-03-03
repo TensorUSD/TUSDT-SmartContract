@@ -1,6 +1,12 @@
 use super::tusdt::*;
 use super::*;
 
+fn set_caller(caller: ink::primitives::AccountId) {
+    let callee = ink::env::account_id::<ink::env::DefaultEnvironment>();
+    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(callee);
+    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(caller);
+}
+
 #[ink::test]
 fn new_works() {
     let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
@@ -51,9 +57,7 @@ fn invalid_transfer_should_fail() {
 
     assert_eq!(erc20.balance_of(accounts.bob), 0);
 
-    let contract = ink::env::account_id::<ink::env::DefaultEnvironment>();
-    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(contract);
-    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+    set_caller(accounts.bob);
 
     assert_eq!(
         erc20.transfer(accounts.eve, 10),
@@ -76,9 +80,7 @@ fn transfer_from_works() {
     );
     assert_eq!(erc20.approve(accounts.bob, 10), Ok(()));
 
-    let contract = ink::env::account_id::<ink::env::DefaultEnvironment>();
-    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(contract);
-    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+    set_caller(accounts.bob);
 
     assert_eq!(
         erc20.transfer_from(accounts.alice, accounts.eve, 10),
@@ -98,9 +100,7 @@ fn allowance_must_not_change_on_failed_transfer() {
     let initial_allowance = alice_balance + 2;
     assert_eq!(erc20.approve(accounts.bob, initial_allowance), Ok(()));
 
-    let callee = ink::env::account_id::<ink::env::DefaultEnvironment>();
-    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(callee);
-    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+    set_caller(accounts.bob);
 
     assert_eq!(
         erc20.transfer_from(accounts.alice, accounts.eve, alice_balance + 1),
@@ -117,9 +117,7 @@ fn mint_fails_for_non_owner() {
     let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
 
-    let contract = ink::env::account_id::<ink::env::DefaultEnvironment>();
-    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(contract);
-    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+    set_caller(accounts.bob);
 
     assert_eq!(erc20.mint(accounts.bob, 100), Err(Error::NotOwner));
     assert_eq!(erc20.total_supply(), 0);
@@ -143,9 +141,7 @@ fn burn_fails_for_non_owner() {
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.bob, 100), Ok(()));
 
-    let contract = ink::env::account_id::<ink::env::DefaultEnvironment>();
-    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(contract);
-    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+    set_caller(accounts.bob);
 
     assert_eq!(erc20.burn(accounts.bob, 10), Err(Error::NotOwner));
     assert_eq!(erc20.total_supply(), 100);
@@ -185,9 +181,7 @@ fn transfer_from_partially_consumes_allowance() {
     assert_eq!(erc20.mint(accounts.alice, 100), Ok(()));
     assert_eq!(erc20.approve(accounts.bob, 30), Ok(()));
 
-    let contract = ink::env::account_id::<ink::env::DefaultEnvironment>();
-    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(contract);
-    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+    set_caller(accounts.bob);
 
     assert_eq!(
         erc20.transfer_from(accounts.alice, accounts.eve, 10),

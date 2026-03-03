@@ -471,3 +471,6 @@ mod auction {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
