@@ -632,4 +632,51 @@ mod vault {
             Ok(vaults)
         }
     }
+
+    #[cfg(test)]
+    impl TusdtVault {
+        pub(crate) fn new_for_test(owner: AccountId) -> Self {
+            use ink::env::call::FromAccountId;
+
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+
+            Self {
+                owner,
+                token: TusdtErc20Ref::from_account_id(accounts.charlie),
+                auction: TusdtAuctionRef::from_account_id(accounts.django),
+                collateral_token_price: 1,
+                total_collateral_balance: 0,
+                params: Self::default_contract_params(),
+                vaults: Mapping::default(),
+                vault_count: Mapping::default(),
+                vault_keys: StorageVec::default(),
+                liquidation_auctions: Mapping::default(),
+            }
+        }
+
+        pub(crate) fn set_vault_borrowed_balance_for_test(
+            &mut self,
+            owner: AccountId,
+            vault_id: u32,
+            borrowed_token_balance: Balance,
+        ) -> Result<()> {
+            let mut vault = self.load_vault(owner, vault_id)?;
+            vault.borrowed_token_balance = borrowed_token_balance;
+            self.save_vault(owner, vault_id, &vault);
+            Ok(())
+        }
+
+        pub(crate) fn set_liquidation_auction_for_test(
+            &mut self,
+            owner: AccountId,
+            vault_id: u32,
+            auction_id: u32,
+        ) {
+            self.liquidation_auctions
+                .insert((owner, vault_id), &auction_id);
+        }
+    }
 }
+
+#[cfg(test)]
+mod tests;
