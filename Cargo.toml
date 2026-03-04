@@ -7,6 +7,7 @@ edition = "2021"
 
 [workspace]
 members = [
+    "env",
     "primitives",
     "contracts/tusdt-erc20",
     "contracts/tusdt-auction",
@@ -16,6 +17,7 @@ resolver = "2"
 
 [workspace.dependencies]
 ink = { version = "5.1.1", default-features = false }
+parity-scale-codec = { version = "3.0.0", default-features = false }
 sp-arithmetic = { version = "26.1.0", default-features = false }
 
 ink_e2e = { version = "5.1.1" }

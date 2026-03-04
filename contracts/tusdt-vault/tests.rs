@@ -2,27 +2,27 @@ use super::vault::*;
 use tusdt_primitives::MILLISECONDS_PER_DAY;
 
 fn set_caller(caller: ink::primitives::AccountId) {
-    let callee = ink::env::account_id::<ink::env::DefaultEnvironment>();
-    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(callee);
-    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(caller);
+    let callee = ink::env::account_id::<tusdt_env::CustomEnvironment>();
+    ink::env::test::set_callee::<tusdt_env::CustomEnvironment>(callee);
+    ink::env::test::set_caller::<tusdt_env::CustomEnvironment>(caller);
 }
 
 fn set_time(timestamp: u64) {
-    ink::env::test::set_block_timestamp::<ink::env::DefaultEnvironment>(timestamp);
+    ink::env::test::set_block_timestamp::<tusdt_env::CustomEnvironment>(timestamp);
 }
 
-fn set_transferred_value(value: u128) {
-    ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(value);
+fn set_transferred_value(value: u64) {
+    ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(u128::from(value));
 }
 
-fn transfer_in(value: u128) {
-    ink::env::test::transfer_in::<ink::env::DefaultEnvironment>(value);
+fn transfer_in(value: u64) {
+    ink::env::test::transfer_in::<ink::env::DefaultEnvironment>(u128::from(value));
 }
 
 fn create_vault_with_collateral(
     contract: &mut TusdtVault,
     owner: ink::primitives::AccountId,
-    collateral: u128,
+    collateral: u64,
 ) -> u32 {
     set_caller(owner);
     transfer_in(collateral);
@@ -33,7 +33,7 @@ fn create_vault_with_collateral(
 
 #[ink::test]
 fn create_vault_tracks_ids_balances_and_counts() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     set_time(10);
@@ -69,7 +69,7 @@ fn create_vault_tracks_ids_balances_and_counts() {
 
 #[ink::test]
 fn add_collateral_updates_vault_and_total_collateral() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     create_vault_with_collateral(&mut vault, accounts.alice, 400);
@@ -87,7 +87,7 @@ fn add_collateral_updates_vault_and_total_collateral() {
 
 #[ink::test]
 fn add_collateral_fails_for_missing_or_liquidating_vault() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     set_caller(accounts.bob);
@@ -104,7 +104,7 @@ fn add_collateral_fails_for_missing_or_liquidating_vault() {
 
 #[ink::test]
 fn release_collateral_works_and_updates_total_collateral() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     create_vault_with_collateral(&mut vault, accounts.alice, 600);
@@ -121,7 +121,7 @@ fn release_collateral_works_and_updates_total_collateral() {
 
 #[ink::test]
 fn release_collateral_checks_balance_and_ratio() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     create_vault_with_collateral(&mut vault, accounts.alice, 150);
@@ -143,7 +143,7 @@ fn release_collateral_checks_balance_and_ratio() {
 
 #[ink::test]
 fn set_contract_params_enforces_owner_and_validation() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     let valid = VaultContractParamsPercentage {
@@ -192,7 +192,7 @@ fn set_contract_params_enforces_owner_and_validation() {
 
 #[ink::test]
 fn price_update_and_collateral_value_queries_work() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     set_caller(accounts.bob);
@@ -216,7 +216,7 @@ fn price_update_and_collateral_value_queries_work() {
 
 #[ink::test]
 fn pagination_for_owner_and_global_vaults_works() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     for _ in 0..12 {
@@ -255,7 +255,7 @@ fn pagination_for_owner_and_global_vaults_works() {
 
 #[ink::test]
 fn interest_accrues_after_full_days_only() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let vault_contract = TusdtVault::new_for_test(accounts.alice);
     let mut vault = Vault {
         id: 0,
@@ -279,7 +279,7 @@ fn interest_accrues_after_full_days_only() {
 
 #[ink::test]
 fn liquidatable_check_uses_liquidation_ratio_limit() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let vault_contract = TusdtVault::new_for_test(accounts.alice);
 
     let safe_vault = Vault {

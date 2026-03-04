@@ -6971,7 +6971,16 @@ version = "0.1.0"
 dependencies = [
  "ink",
  "ink_e2e",
+ "tusdt-env",
  "tusdt-erc20",
+]
+
+[[package]]
+name = "tusdt-env"
+version = "0.1.0"
+dependencies = [
+ "ink",
+ "parity-scale-codec",
 ]
 
 [[package]]
@@ -6980,6 +6989,7 @@ version = "0.1.0"
 dependencies = [
  "ink",
  "ink_e2e",
+ "tusdt-env",
 ]
 
 [[package]]
@@ -6997,6 +7007,7 @@ dependencies = [
  "ink",
  "ink_e2e",
  "tusdt-auction",
+ "tusdt-env",
  "tusdt-erc20",
  "tusdt-primitives",
 ]

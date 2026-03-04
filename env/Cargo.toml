@@ -1,0 +1,16 @@
+[package]
+name = "tusdt-env"
+version = "0.1.0"
+authors = ["tensorusd admin@tensorusd.com"]
+edition = "2021"
+
+[dependencies]
+ink = { workspace = true, default-features = false }
+parity-scale-codec = { workspace = true, default-features = false }
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["std", "parity-scale-codec/std"]
+std = ["ink/std"]

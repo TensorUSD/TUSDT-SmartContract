@@ -2,14 +2,14 @@ use super::tusdt::*;
 use super::*;
 
 fn set_caller(caller: ink::primitives::AccountId) {
-    let callee = ink::env::account_id::<ink::env::DefaultEnvironment>();
-    ink::env::test::set_callee::<ink::env::DefaultEnvironment>(callee);
-    ink::env::test::set_caller::<ink::env::DefaultEnvironment>(caller);
+    let callee = ink::env::account_id::<tusdt_env::CustomEnvironment>();
+    ink::env::test::set_callee::<tusdt_env::CustomEnvironment>(callee);
+    ink::env::test::set_caller::<tusdt_env::CustomEnvironment>(caller);
 }
 
 #[ink::test]
 fn new_works() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let erc20 = TusdtErc20::new(accounts.alice);
 
     assert_eq!(erc20.owner(), accounts.alice);
@@ -19,7 +19,7 @@ fn new_works() {
 
 #[ink::test]
 fn total_supply_works() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
 
     assert_eq!(erc20.mint(accounts.alice, 100), Ok(()));
@@ -29,7 +29,7 @@ fn total_supply_works() {
 
 #[ink::test]
 fn balance_of_works() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.alice, 100), Ok(()));
 
@@ -39,7 +39,7 @@ fn balance_of_works() {
 
 #[ink::test]
 fn transfer_works() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.alice, 100), Ok(()));
 
@@ -51,7 +51,7 @@ fn transfer_works() {
 
 #[ink::test]
 fn invalid_transfer_should_fail() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.alice, 100), Ok(()));
 
@@ -70,7 +70,7 @@ fn invalid_transfer_should_fail() {
 
 #[ink::test]
 fn transfer_from_works() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.alice, 100), Ok(()));
 
@@ -92,7 +92,7 @@ fn transfer_from_works() {
 
 #[ink::test]
 fn allowance_must_not_change_on_failed_transfer() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.alice, 100), Ok(()));
 
@@ -114,7 +114,7 @@ fn allowance_must_not_change_on_failed_transfer() {
 
 #[ink::test]
 fn mint_fails_for_non_owner() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
 
     set_caller(accounts.bob);
@@ -126,7 +126,7 @@ fn mint_fails_for_non_owner() {
 
 #[ink::test]
 fn burn_works_for_owner() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.bob, 100), Ok(()));
 
@@ -137,7 +137,7 @@ fn burn_works_for_owner() {
 
 #[ink::test]
 fn burn_fails_for_non_owner() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.bob, 100), Ok(()));
 
@@ -150,7 +150,7 @@ fn burn_fails_for_non_owner() {
 
 #[ink::test]
 fn burn_fails_on_insufficient_balance() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.bob, 50), Ok(()));
 
@@ -164,7 +164,7 @@ fn burn_fails_on_insufficient_balance() {
 
 #[ink::test]
 fn approve_overwrites_allowance() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
 
     assert_eq!(erc20.approve(accounts.bob, 10), Ok(()));
@@ -176,7 +176,7 @@ fn approve_overwrites_allowance() {
 
 #[ink::test]
 fn transfer_from_partially_consumes_allowance() {
-    let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
     assert_eq!(erc20.mint(accounts.alice, 100), Ok(()));
     assert_eq!(erc20.approve(accounts.bob, 30), Ok(()));

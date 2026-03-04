@@ -2,7 +2,7 @@
 
 pub use self::tusdt::{TusdtErc20, TusdtErc20Ref};
 
-#[ink::contract]
+#[ink::contract(env = tusdt_env::CustomEnvironment)]
 mod tusdt {
     use ink::storage::Mapping;
 

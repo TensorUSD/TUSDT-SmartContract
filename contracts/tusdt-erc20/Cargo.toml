@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 ink = { workspace = true, default-features = false }
+tusdt-env = { path = "../../env", default-features = false }
 
 [dev-dependencies]
 ink_e2e = { workspace = true }
@@ -15,6 +16,6 @@ path = "lib.rs"
 
 [features]
 default = ["std"]
-std = ["ink/std"]
+std = ["ink/std", "tusdt-env/std"]
 ink-as-dependency = []
 e2e-tests = []

@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
-#[ink::contract]
+#[ink::contract(env = tusdt_env::CustomEnvironment)]
 mod vault {
     use core::cmp::min;
     use ink::prelude::vec::Vec;
@@ -405,13 +405,15 @@ mod vault {
                 .borrowed_token_balance
                 .checked_div(self.collateral_token_price)
                 .ok_or(Error::ArithmeticError)?;
+            let liquidation_fee = self
+                .params
+                .liquidation_fee
+                .checked_mul_value(u128::from(collateral_debt))
+                .ok_or(Error::ArithmeticError)?;
+            let liquidation_fee =
+                Balance::try_from(liquidation_fee).map_err(|_| Error::ArithmeticError)?;
             let collateral_to_auction = collateral_debt
-                .checked_add(
-                    self.params
-                        .liquidation_fee
-                        .checked_mul_value(collateral_debt)
-                        .ok_or(Error::ArithmeticError)?,
-                )
+                .checked_add(liquidation_fee)
                 .ok_or(Error::ArithmeticError)?;
             let auction_id = self
                 .auction
@@ -638,7 +640,8 @@ mod vault {
         pub(crate) fn new_for_test(owner: AccountId) -> Self {
             use ink::env::call::FromAccountId;
 
-            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let accounts =
+                ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
 
             Self {
                 owner,

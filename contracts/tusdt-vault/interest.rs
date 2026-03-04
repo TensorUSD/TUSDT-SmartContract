@@ -34,9 +34,11 @@ impl TusdtVault {
             .checked_pow(borrowed_days)
             .ok_or(Error::ArithmeticError)?;
 
-        vault.borrowed_token_balance = compounded_growth_factor
-            .checked_mul_value(vault.borrowed_token_balance)
+        let next_borrowed_balance = compounded_growth_factor
+            .checked_mul_value(u128::from(vault.borrowed_token_balance))
             .ok_or(Error::ArithmeticError)?;
+        vault.borrowed_token_balance =
+            Balance::try_from(next_borrowed_balance).map_err(|_| Error::ArithmeticError)?;
 
         let accrued_milliseconds = borrowed_days
             .checked_mul(MILLISECONDS_PER_DAY as u128)

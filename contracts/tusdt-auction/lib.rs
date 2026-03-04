@@ -2,7 +2,7 @@
 
 pub use self::auction::{Auction, Bid, TusdtAuction, TusdtAuctionRef};
 
-#[ink::contract]
+#[ink::contract(env = tusdt_env::CustomEnvironment)]
 mod auction {
     use core::cmp::min;
     use ink::{env::call::FromAccountId, prelude::vec::Vec, storage::Mapping};
