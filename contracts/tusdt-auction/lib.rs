@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
-pub use self::auction::{Auction, Bid, TusdtAuction, TusdtAuctionRef};
+pub use self::auction::{Auction, Bid, BidMetadata, TusdtAuction, TusdtAuctionRef};
 
 #[ink::contract(env = tusdt_env::CustomEnvironment)]
 mod auction {
@@ -42,7 +42,15 @@ mod auction {
         pub auction_id: u32,
         pub bidder: AccountId,
         pub amount: Balance,
+        pub metadata: Option<BidMetadata>,
         pub is_withdrawn: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    #[ink::scale_derive(Decode, Encode, TypeInfo)]
+    #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
+    pub struct BidMetadata {
+        pub hot_key: AccountId,
     }
 
     #[ink(storage)]
@@ -212,7 +220,12 @@ mod auction {
         }
 
         #[ink(message)]
-        pub fn place_bid(&mut self, auction_id: u32, bid_amount: Balance) -> Result<u32> {
+        pub fn place_bid(
+            &mut self,
+            auction_id: u32,
+            bid_amount: Balance,
+            metadata: Option<BidMetadata>,
+        ) -> Result<u32> {
             let bidder = self.env().caller();
 
             let mut auction = self
@@ -241,6 +254,7 @@ mod auction {
                 auction_id,
                 bidder,
                 amount: bid_amount,
+                metadata,
                 is_withdrawn: false,
             };
             self.auction_bids.insert((auction_id, bid_id), &bid);

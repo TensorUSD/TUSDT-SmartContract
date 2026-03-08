@@ -21,6 +21,10 @@ fn create_default_auction(
         .expect("create_auction should succeed")
 }
 
+fn default_bid_metadata(hot_key: ink::primitives::AccountId) -> Option<BidMetadata> {
+    Some(BidMetadata { hot_key })
+}
+
 #[ink::test]
 fn new_works() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
@@ -102,7 +106,10 @@ fn place_bid_fails_when_auction_not_found() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
 
-    assert_eq!(auction.place_bid(42, 600), Err(Error::AuctionNotFound));
+    assert_eq!(
+        auction.place_bid(42, 600, default_bid_metadata(accounts.django)),
+        Err(Error::AuctionNotFound)
+    );
 }
 
 #[ink::test]
@@ -112,7 +119,7 @@ fn place_bid_fails_when_bid_is_below_debt() {
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 2);
     assert_eq!(
-        auction.place_bid(auction_id, 499),
+        auction.place_bid(auction_id, 499, default_bid_metadata(accounts.django)),
         Err(Error::BidBelowDebtBalance)
     );
 }
@@ -125,7 +132,10 @@ fn place_bid_fails_when_auction_has_ended() {
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 2);
     set_time(1_100);
-    assert_eq!(auction.place_bid(auction_id, 600), Err(Error::AuctionEnded));
+    assert_eq!(
+        auction.place_bid(auction_id, 600, default_bid_metadata(accounts.django)),
+        Err(Error::AuctionEnded)
+    );
 }
 
 #[ink::test]
