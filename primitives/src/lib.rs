@@ -5,9 +5,13 @@ use sp_arithmetic::traits::{CheckedAdd, CheckedDiv, CheckedMul, One, Zero};
 use sp_arithmetic::FixedU128;
 
 pub const MILLISECONDS_PER_SECOND: u64 = 1_000;
+pub const SECONDS_PER_HOUR: u64 = 3_600;
+pub const HOURS_PER_DAY: u64 = 24;
 pub const SECONDS_PER_DAY: u64 = 86_400;
+pub const MILLISECONDS_PER_HOUR: u64 = SECONDS_PER_HOUR * MILLISECONDS_PER_SECOND;
 pub const MILLISECONDS_PER_DAY: u64 = SECONDS_PER_DAY * MILLISECONDS_PER_SECOND;
 pub const DAYS_PER_YEAR: u128 = 365;
+pub const HOURS_PER_YEAR: u128 = DAYS_PER_YEAR * HOURS_PER_DAY as u128;
 const FIXED_SCALE: u128 = <FixedU128 as FixedPointNumber>::DIV;
 
 #[ink::scale_derive(Encode, Decode, TypeInfo)]

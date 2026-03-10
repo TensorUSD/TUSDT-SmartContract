@@ -306,6 +306,7 @@ mod vault {
                 .map_err(|_| Error::TransferFailed)?;
 
             vault.borrowed_token_balance = projected_borrowed;
+            self.touch_last_interest_accrued_at(&mut vault);
             self.save_vault(caller, vault_id, &vault);
 
             self.env().emit_event(TokensBorrowed {
@@ -477,8 +478,9 @@ mod vault {
                     .map_err(|_| Error::TransferFailed)?;
 
                 vault.collateral_balance = vault.collateral_balance.saturating_sub(collateral_sold);
-                self.total_collateral_balance =
-                    self.total_collateral_balance.saturating_sub(collateral_sold);
+                self.total_collateral_balance = self
+                    .total_collateral_balance
+                    .saturating_sub(collateral_sold);
                 vault.borrowed_token_balance = 0;
             }
 
@@ -639,8 +641,7 @@ mod vault {
         pub(crate) fn new_for_test(owner: AccountId) -> Self {
             use ink::env::call::FromAccountId;
 
-            let accounts =
-                ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+            let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
 
             Self {
                 owner,

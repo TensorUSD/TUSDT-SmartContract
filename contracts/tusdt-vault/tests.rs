@@ -1,5 +1,5 @@
 use super::vault::*;
-use tusdt_primitives::MILLISECONDS_PER_DAY;
+use tusdt_primitives::MILLISECONDS_PER_HOUR;
 
 fn set_caller(caller: ink::primitives::AccountId) {
     let callee = ink::env::account_id::<tusdt_env::CustomEnvironment>();
@@ -254,7 +254,7 @@ fn pagination_for_owner_and_global_vaults_works() {
 }
 
 #[ink::test]
-fn interest_accrues_after_full_days_only() {
+fn interest_accrues_after_full_hours_only() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let vault_contract = TusdtVault::new_for_test(accounts.alice);
     let mut vault = Vault {
@@ -266,15 +266,15 @@ fn interest_accrues_after_full_days_only() {
         last_interest_accrued_at: 0,
     };
 
-    set_time(MILLISECONDS_PER_DAY / 2);
+    set_time(MILLISECONDS_PER_HOUR / 2);
     assert_eq!(vault_contract.accrue_interest(&mut vault), Ok(()));
     assert_eq!(vault.borrowed_token_balance, 1_000_000);
     assert_eq!(vault.last_interest_accrued_at, 0);
 
-    set_time(MILLISECONDS_PER_DAY);
+    set_time(MILLISECONDS_PER_HOUR);
     assert_eq!(vault_contract.accrue_interest(&mut vault), Ok(()));
     assert!(vault.borrowed_token_balance > 1_000_000);
-    assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_DAY);
+    assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_HOUR);
 }
 
 #[ink::test]

@@ -1,6 +1,6 @@
 use super::*;
 use ink::codegen::Env as _;
-use tusdt_primitives::{DAYS_PER_YEAR, MILLISECONDS_PER_DAY};
+use tusdt_primitives::{HOURS_PER_YEAR, MILLISECONDS_PER_HOUR};
 
 impl TusdtVault {
     pub(crate) fn accrue_interest(&self, vault: &mut Vault) -> Result<()> {
@@ -16,22 +16,22 @@ impl TusdtVault {
         // We checked that now > vault.last_interest_accrued_at.
         #[allow(clippy::arithmetic_side_effects)]
         let elapsed = (now - vault.last_interest_accrued_at) as u128;
-        let borrowed_days = elapsed
-            .checked_div(MILLISECONDS_PER_DAY as u128)
+        let borrowed_hours = elapsed
+            .checked_div(MILLISECONDS_PER_HOUR as u128)
             .ok_or(Error::ArithmeticError)?;
-        if borrowed_days == 0 {
+        if borrowed_hours == 0 {
             return Ok(());
         }
 
-        let daily_exponent = self
+        let hourly_exponent = self
             .params
             .interest_rate
-            .checked_div_int(DAYS_PER_YEAR)
+            .checked_div_int(HOURS_PER_YEAR)
             .ok_or(Error::ArithmeticError)?;
 
-        let daily_growth_factor = daily_exponent.exp().ok_or(Error::ArithmeticError)?;
-        let compounded_growth_factor = daily_growth_factor
-            .checked_pow(borrowed_days)
+        let hourly_growth_factor = hourly_exponent.exp().ok_or(Error::ArithmeticError)?;
+        let compounded_growth_factor = hourly_growth_factor
+            .checked_pow(borrowed_hours)
             .ok_or(Error::ArithmeticError)?;
 
         let next_borrowed_balance = compounded_growth_factor
@@ -40,8 +40,8 @@ impl TusdtVault {
         vault.borrowed_token_balance =
             Balance::try_from(next_borrowed_balance).map_err(|_| Error::ArithmeticError)?;
 
-        let accrued_milliseconds = borrowed_days
-            .checked_mul(MILLISECONDS_PER_DAY as u128)
+        let accrued_milliseconds = borrowed_hours
+            .checked_mul(MILLISECONDS_PER_HOUR as u128)
             .ok_or(Error::ArithmeticError)?
             .checked_add(vault.last_interest_accrued_at as u128)
             .ok_or(Error::ArithmeticError)?;
@@ -54,5 +54,9 @@ impl TusdtVault {
         vault.last_interest_accrued_at = accrued_milliseconds;
 
         Ok(())
+    }
+
+    pub(crate) fn touch_last_interest_accrued_at(&self, vault: &mut Vault) {
+        vault.last_interest_accrued_at = self.env().block_timestamp();
     }
 }
