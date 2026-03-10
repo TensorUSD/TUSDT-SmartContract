@@ -163,7 +163,6 @@ mod vault {
         NotVaultOwner,
         TransferFailed,
         TokenBorrowedNotZero,
-        OutOfBoundPage,
         InvalidRatio,
         InvalidAuctionDuration,
         CollateralRatioExceeded,
@@ -602,7 +601,7 @@ mod vault {
             let total_owner_vaults = self.vault_count.get(owner).unwrap_or_default();
             let start = page.saturating_mul(PAGE_SIZE);
             if start >= total_owner_vaults {
-                return Err(Error::OutOfBoundPage);
+                return Ok(Vec::new());
             }
             let end = min(start.saturating_add(PAGE_SIZE), total_owner_vaults);
 
@@ -620,7 +619,7 @@ mod vault {
             let total_vaults = self.vault_keys.len();
             let start = page.saturating_mul(PAGE_SIZE);
             if start >= total_vaults {
-                return Err(Error::OutOfBoundPage);
+                return Ok(Vec::new());
             }
             let end = min(start.saturating_add(PAGE_SIZE), total_vaults);
 

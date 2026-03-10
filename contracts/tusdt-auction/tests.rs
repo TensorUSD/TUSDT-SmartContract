@@ -211,7 +211,7 @@ fn get_all_auctions_supports_pagination() {
 
     assert!(matches!(
         auction.get_all_auctions(2),
-        Err(Error::OutOfBoundPage)
+        Ok(auctions) if auctions.is_empty()
     ));
 }
 
@@ -238,14 +238,14 @@ fn get_active_auctions_updates_after_finalize() {
 }
 
 #[ink::test]
-fn get_bids_fails_for_out_of_bounds_page_when_no_bids() {
+fn get_bids_returns_empty_for_out_of_bounds_page_when_no_bids() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 13);
     assert!(matches!(
         auction.get_bids(auction_id, 0),
-        Err(Error::OutOfBoundPage)
+        Ok(bids) if bids.is_empty()
     ));
 }
 

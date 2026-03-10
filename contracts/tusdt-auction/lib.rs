@@ -119,7 +119,6 @@ mod auction {
         AuctionEnded,
         AuctionNotEnded,
         AuctionFinalized,
-        OutOfBoundPage,
         WinningBidLocked,
         InvalidDuration,
         TransferFailed,
@@ -384,7 +383,7 @@ mod auction {
             let total_bids = auction.bid_count;
             let start = page.saturating_mul(PAGE_SIZE);
             if start >= total_bids {
-                return Err(Error::OutOfBoundPage);
+                return Ok(Vec::new());
             }
             let end = min(start.saturating_add(PAGE_SIZE), total_bids);
 
@@ -412,7 +411,7 @@ mod auction {
             let total_auctions = self.auction_count;
             let start = page.saturating_mul(PAGE_SIZE);
             if start >= total_auctions {
-                return Err(Error::OutOfBoundPage);
+                return Ok(Vec::new());
             }
             let end = min(start.saturating_add(PAGE_SIZE), total_auctions);
 
@@ -430,7 +429,7 @@ mod auction {
             let total_active_auctions = self.active_auction_count;
             let start = page.saturating_mul(PAGE_SIZE);
             if start >= total_active_auctions {
-                return Err(Error::OutOfBoundPage);
+                return Ok(Vec::new());
             }
             let end = min(start.saturating_add(PAGE_SIZE), total_active_auctions);
 

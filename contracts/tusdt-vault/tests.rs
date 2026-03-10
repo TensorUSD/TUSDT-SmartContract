@@ -239,7 +239,7 @@ fn pagination_for_owner_and_global_vaults_works() {
 
     assert!(matches!(
         vault.get_vaults(accounts.alice, 2),
-        Err(Error::OutOfBoundPage)
+        Ok(vaults) if vaults.is_empty()
     ));
 
     let all_page_0 = vault.get_all_vaults(0).expect("global page 0 should exist");
@@ -249,7 +249,7 @@ fn pagination_for_owner_and_global_vaults_works() {
 
     assert!(matches!(
         vault.get_all_vaults(2),
-        Err(Error::OutOfBoundPage)
+        Ok(vaults) if vaults.is_empty()
     ));
 }
 
