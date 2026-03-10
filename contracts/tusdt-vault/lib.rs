@@ -191,7 +191,7 @@ mod vault {
                 .endowment(0)
                 .salt_bytes([0; 32])
                 .instantiate();
-            let auction = TusdtAuctionRef::new(contract_account, token.to_account_id())
+            let auction = TusdtAuctionRef::new(contract_account, owner, token.to_account_id())
                 .code_hash(auction_code_hash)
                 .endowment(0)
                 .salt_bytes([1; 32])

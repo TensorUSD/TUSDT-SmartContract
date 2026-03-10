@@ -28,9 +28,10 @@ fn default_bid_metadata(hot_key: ink::primitives::AccountId) -> Option<BidMetada
 #[ink::test]
 fn new_works() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     assert_eq!(auction.owner(), accounts.alice);
+    assert_eq!(auction.admin(), accounts.bob);
     assert_eq!(auction.get_total_auctions_count(), 0);
     assert_eq!(auction.get_active_auctions_count(), 0);
 }
@@ -39,7 +40,7 @@ fn new_works() {
 fn create_auction_works() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_time(10);
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 7);
     assert_eq!(auction_id, 0);
@@ -67,7 +68,7 @@ fn create_auction_works() {
 #[ink::test]
 fn create_auction_fails_for_non_owner() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     set_caller(accounts.bob);
     assert_eq!(
@@ -81,7 +82,7 @@ fn create_auction_fails_for_non_owner() {
 #[ink::test]
 fn create_auction_fails_if_active_auction_exists_for_vault() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     create_default_auction(&mut auction, accounts.bob, 1);
     assert_eq!(
@@ -93,7 +94,7 @@ fn create_auction_fails_if_active_auction_exists_for_vault() {
 #[ink::test]
 fn create_auction_fails_on_invalid_duration() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     assert_eq!(
         auction.create_auction(accounts.bob, 1, 1_000, 400, Some(0)),
@@ -104,7 +105,7 @@ fn create_auction_fails_on_invalid_duration() {
 #[ink::test]
 fn place_bid_fails_when_auction_not_found() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     assert_eq!(
         auction.place_bid(42, 600, default_bid_metadata(accounts.django)),
@@ -115,7 +116,7 @@ fn place_bid_fails_when_auction_not_found() {
 #[ink::test]
 fn place_bid_fails_when_bid_is_below_debt() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 2);
     assert_eq!(
@@ -125,44 +126,97 @@ fn place_bid_fails_when_bid_is_below_debt() {
 }
 
 #[ink::test]
-fn place_bid_fails_when_auction_has_ended() {
+fn place_bid_fails_for_non_admin_after_auction_end_without_bids() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_time(100);
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 2);
     set_time(1_100);
+    set_caller(accounts.django);
     assert_eq!(
         auction.place_bid(auction_id, 600, default_bid_metadata(accounts.django)),
-        Err(Error::AuctionEnded)
+        Err(Error::NotAdmin)
     );
 }
 
 #[ink::test]
-fn finalize_auction_works_after_end() {
+fn finalize_auction_fails_without_bids_after_end() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_time(200);
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 3);
     set_time(1_200);
-    assert_eq!(auction.finalize_auction(auction_id), Ok(()));
+    assert_eq!(auction.finalize_auction(auction_id), Err(Error::AuctionHasNoBids));
 
-    let finalized = auction
-        .get_auction(auction_id)
-        .expect("auction should exist");
-    assert_eq!(finalized.is_finalized, true);
-    assert_eq!(finalized.highest_bidder, None);
-    assert_eq!(finalized.highest_bid, 0);
-    assert_eq!(auction.get_active_auctions_count(), 0);
-    assert_eq!(auction.get_active_vault_auction(accounts.bob, 3), None);
+    let pending = auction.get_auction(auction_id).expect("auction should exist");
+    assert_eq!(pending.is_finalized, false);
+    assert_eq!(auction.get_active_auctions_count(), 1);
+    assert_eq!(auction.get_active_vault_auction(accounts.bob, 3), Some(auction_id));
+}
+
+#[ink::test]
+fn late_bid_is_allowed_only_for_admin_when_no_bids_exist() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let auction_contract = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+    let auction = Auction {
+        id: 0,
+        vault_owner: accounts.bob,
+        vault_id: 9,
+        collateral_balance: 1_000,
+        debt_balance: 500,
+        starts_at: 200,
+        ends_at: 1_200,
+        highest_bidder: None,
+        highest_bid: 0,
+        highest_bid_id: None,
+        bid_count: 0,
+        is_finalized: false,
+    };
+
+    set_time(1_200);
+    assert_eq!(
+        auction_contract.ensure_bid_allowed(&auction, accounts.bob),
+        Ok(())
+    );
+    assert_eq!(
+        auction_contract.ensure_bid_allowed(&auction, accounts.django),
+        Err(Error::NotAdmin)
+    );
+}
+
+#[ink::test]
+fn late_bid_fails_after_end_once_bids_exist() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let auction_contract = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+    let auction = Auction {
+        id: 0,
+        vault_owner: accounts.bob,
+        vault_id: 9,
+        collateral_balance: 1_000,
+        debt_balance: 500,
+        starts_at: 200,
+        ends_at: 1_200,
+        highest_bidder: Some(accounts.eve),
+        highest_bid: 550,
+        highest_bid_id: Some(0),
+        bid_count: 1,
+        is_finalized: false,
+    };
+
+    set_time(1_200);
+    assert_eq!(
+        auction_contract.ensure_bid_allowed(&auction, accounts.bob),
+        Err(Error::AuctionEnded)
+    );
 }
 
 #[ink::test]
 fn finalize_auction_fails_before_end() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_time(50);
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 4);
     set_time(999);
@@ -176,9 +230,12 @@ fn finalize_auction_fails_before_end() {
 fn finalize_auction_fails_if_already_finalized() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_time(100);
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 5);
+    auction
+        .seed_bid_for_test(auction_id, accounts.eve, 600)
+        .expect("test setup should seed a bid");
     set_time(1_100);
     assert_eq!(auction.finalize_auction(auction_id), Ok(()));
     assert_eq!(
@@ -190,7 +247,7 @@ fn finalize_auction_fails_if_already_finalized() {
 #[ink::test]
 fn get_all_auctions_supports_pagination() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     for vault_id in 0..12 {
         assert_eq!(
@@ -219,10 +276,13 @@ fn get_all_auctions_supports_pagination() {
 fn get_active_auctions_updates_after_finalize() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_time(1);
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let first = create_default_auction(&mut auction, accounts.bob, 11);
     let second = create_default_auction(&mut auction, accounts.bob, 12);
+    auction
+        .seed_bid_for_test(first, accounts.eve, 600)
+        .expect("test setup should seed a bid");
     assert_eq!(first, 0);
     assert_eq!(second, 1);
 
@@ -240,7 +300,7 @@ fn get_active_auctions_updates_after_finalize() {
 #[ink::test]
 fn get_bids_returns_empty_for_out_of_bounds_page_when_no_bids() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 13);
     assert!(matches!(
@@ -252,7 +312,7 @@ fn get_bids_returns_empty_for_out_of_bounds_page_when_no_bids() {
 #[ink::test]
 fn withdraw_refund_fails_when_bid_not_found() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut auction = TusdtAuction::new(accounts.alice, accounts.charlie);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 14);
     assert_eq!(

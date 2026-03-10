@@ -56,6 +56,7 @@ mod auction {
     #[ink(storage)]
     pub struct TusdtAuction {
         owner: AccountId,
+        admin: AccountId,
         token: TusdtErc20Ref,
 
         auction_count: u32,
@@ -111,6 +112,7 @@ mod auction {
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
         NotOwner,
+        NotAdmin,
         AuctionNotFound,
         BidNotFound,
         NotBidder,
@@ -119,6 +121,7 @@ mod auction {
         AuctionEnded,
         AuctionNotEnded,
         AuctionFinalized,
+        AuctionHasNoBids,
         WinningBidLocked,
         InvalidDuration,
         TransferFailed,
@@ -130,10 +133,11 @@ mod auction {
 
     impl TusdtAuction {
         #[ink(constructor)]
-        pub fn new(owner: AccountId, token_address: AccountId) -> Self {
+        pub fn new(owner: AccountId, admin: AccountId, token_address: AccountId) -> Self {
             let token = TusdtErc20Ref::from_account_id(token_address);
             Self {
                 owner,
+                admin,
                 token,
 
                 auction_count: 0,
@@ -232,12 +236,7 @@ mod auction {
                 .get(auction_id)
                 .ok_or(Error::AuctionNotFound)?;
 
-            if auction.is_finalized {
-                return Err(Error::AuctionFinalized);
-            }
-            if self.env().block_timestamp() >= auction.ends_at {
-                return Err(Error::AuctionEnded);
-            }
+            self.ensure_bid_allowed(&auction, bidder)?;
             if bid_amount < auction.debt_balance {
                 return Err(Error::BidBelowDebtBalance);
             }
@@ -291,6 +290,9 @@ mod auction {
             }
             if self.env().block_timestamp() < auction.ends_at {
                 return Err(Error::AuctionNotEnded);
+            }
+            if auction.bid_count == 0 {
+                return Err(Error::AuctionHasNoBids);
             }
 
             auction.is_finalized = true;
@@ -478,9 +480,63 @@ mod auction {
             Ok(())
         }
 
+        pub(crate) fn ensure_bid_allowed(
+            &self,
+            auction: &Auction,
+            bidder: AccountId,
+        ) -> Result<()> {
+            if auction.is_finalized {
+                return Err(Error::AuctionFinalized);
+            }
+
+            let now = self.env().block_timestamp();
+            if now < auction.ends_at {
+                return Ok(());
+            }
+
+            // If the auction ended and has bid nobody can place bid.
+            if auction.bid_count > 0 {
+                return Err(Error::AuctionEnded);
+            }
+            // If the auction ends and no bid, only admin can place the bid.
+            if bidder != self.admin {
+                return Err(Error::NotAdmin);
+            }
+
+            Ok(())
+        }
+
         #[ink(message)]
         pub fn owner(&self) -> AccountId {
             self.owner
+        }
+
+        #[ink(message)]
+        pub fn admin(&self) -> AccountId {
+            self.admin
+        }
+    }
+
+    #[cfg(test)]
+    impl TusdtAuction {
+        pub(crate) fn seed_bid_for_test(
+            &mut self,
+            auction_id: u32,
+            bidder: AccountId,
+            amount: Balance,
+        ) -> Result<()> {
+            let mut auction = self
+                .auctions
+                .get(auction_id)
+                .ok_or(Error::AuctionNotFound)?;
+
+            auction.bid_count = 1;
+            auction.highest_bidder = Some(bidder);
+            auction.highest_bid = amount;
+            auction.highest_bid_id = Some(0);
+            self.auctions.insert(auction_id, &auction);
+
+            Ok(())
         }
     }
 }
