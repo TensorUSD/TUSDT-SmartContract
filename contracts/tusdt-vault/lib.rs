@@ -474,7 +474,7 @@ mod vault {
                     return Err(Error::TransferFailed);
                 }
                 self.token
-                    .burn(self.get_auction_address(), auction.highest_bid)
+                    .burn(self.get_auction_address(), debt_cleared)
                     .map_err(|_| Error::TransferFailed)?;
 
                 vault.collateral_balance = vault.collateral_balance.saturating_sub(collateral_sold);
