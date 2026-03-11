@@ -1,6 +1,6 @@
 # TUSDT Contracts Workspace
 
-Ink! contracts for a collateralized TUSD system with vault borrowing, interest accrual, and liquidation auctions.
+Ink! contracts for a collateralized TUSDT system with vault borrowing, interest accrual, and liquidation auctions.
 
 ## Prerequisites
 - Rust stable toolchain
