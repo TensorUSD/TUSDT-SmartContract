@@ -97,8 +97,10 @@ mod auction {
         #[ink(topic)]
         auction_id: u32,
         #[ink(topic)]
-        winner: Option<AccountId>,
+        winner: AccountId,
         highest_bid: Balance,
+        debt_balance: Balance,
+        highest_bid_metadata: Option<BidMetadata>,
     }
 
     #[ink(event)]
@@ -291,7 +293,7 @@ mod auction {
             if self.env().block_timestamp() < auction.ends_at {
                 return Err(Error::AuctionNotEnded);
             }
-            if auction.bid_count == 0 {
+            if auction.bid_count == 0 || auction.highest_bidder.is_none() {
                 return Err(Error::AuctionHasNoBids);
             }
 
@@ -300,14 +302,22 @@ mod auction {
                 .remove((auction.vault_owner, auction.vault_id));
             self.remove_active_auction(auction_id)?;
 
-            let winner = auction.highest_bidder;
+            let winner = auction.highest_bidder.expect("should have winner");
             let highest_bid = auction.highest_bid;
+            let highest_bid_metadata = auction
+                .highest_bid_id
+                .and_then(|bid_id| self.auction_bids.get((auction_id, bid_id)))
+                .ok_or(Error::BidNotFound)?
+                .metadata;
+            let debt_balance = auction.debt_balance;
             self.auctions.insert(auction_id, &auction);
 
             self.env().emit_event(AuctionFinalized {
                 auction_id,
                 winner,
                 highest_bid,
+                debt_balance,
+                highest_bid_metadata,
             });
 
             Ok(())
@@ -535,6 +545,17 @@ mod auction {
             auction.highest_bid = amount;
             auction.highest_bid_id = Some(0);
             self.auctions.insert(auction_id, &auction);
+            self.auction_bids.insert(
+                (auction_id, 0),
+                &Bid {
+                    id: 0,
+                    auction_id,
+                    bidder,
+                    amount,
+                    metadata: None,
+                    is_withdrawn: false,
+                },
+            );
 
             Ok(())
         }
