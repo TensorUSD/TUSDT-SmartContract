@@ -343,9 +343,6 @@ mod auction {
                 return Err(Error::WinningBidLocked);
             }
 
-            if self.env().transfer(caller, bid.amount).is_err() {
-                return Err(Error::TransferFailed);
-            }
             self.token
                 .transfer(caller, bid.amount)
                 .map_err(|_| Error::TransferFailed)?;
