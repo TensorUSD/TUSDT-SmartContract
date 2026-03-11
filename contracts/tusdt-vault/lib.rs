@@ -181,6 +181,7 @@ mod vault {
     pub type Result<T> = core::result::Result<T, Error>;
 
     impl TusdtVault {
+        /// Initializes the vault contract by instantiating the token and auction contracts with the provided code hashes.
         #[ink(constructor)]
         pub fn new(token_code_hash: Hash, auction_code_hash: Hash) -> Self {
             let owner = Self::env().caller();
@@ -213,6 +214,7 @@ mod vault {
             }
         }
 
+        /// Updates contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) with validation; only callable by owner.
         #[ink(message)]
         pub fn set_contract_params(&mut self, params: VaultContractParamsPercentage) -> Result<()> {
             if self.env().caller() != self.owner {
@@ -227,6 +229,7 @@ mod vault {
             Ok(())
         }
 
+        /// Creates a new vault for the caller with the transferred collateral and returns the vault ID.
         #[ink(message, payable)]
         pub fn create_vault(&mut self) -> Result<u32> {
             let caller = self.env().caller();
@@ -262,6 +265,7 @@ mod vault {
             Ok(vault_id)
         }
 
+        /// Adds the transferred collateral amount to an existing vault.
         #[ink(message, payable)]
         pub fn add_collateral(&mut self, vault_id: u32) -> Result<()> {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
@@ -286,6 +290,7 @@ mod vault {
             Ok(())
         }
 
+        /// Borrows tokens against the vault's collateral, validating collateral ratio and accruing interest.
         #[ink(message)]
         pub fn borrow_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
@@ -318,6 +323,7 @@ mod vault {
             Ok(())
         }
 
+        /// Repays borrowed tokens from a vault, accruing interest and burning the repaid tokens.
         #[ink(message)]
         pub fn repay_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
@@ -346,6 +352,7 @@ mod vault {
             Ok(())
         }
 
+        /// Releases collateral from a vault while ensuring the remaining collateral maintains the minimum collateral ratio.
         #[ink(message)]
         pub fn release_collateral(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
@@ -384,6 +391,7 @@ mod vault {
             Ok(())
         }
 
+        /// Initiates a liquidation auction for an unsafe vault, returning the auction ID if successful.
         #[ink(message)]
         pub fn trigger_liquidation_auction(
             &mut self,
@@ -439,6 +447,7 @@ mod vault {
             Ok(auction_id)
         }
 
+        /// Settles a finalized liquidation auction, transferring collateral to the winner and clearing vault debt.
         #[ink(message)]
         pub fn settle_liquidation_auction(
             &mut self,
@@ -500,26 +509,31 @@ mod vault {
             Ok(())
         }
 
+        /// Retrieves the vault details for a given owner and vault ID.
         #[ink(message)]
         pub fn get_vault(&self, owner: AccountId, vault_id: u32) -> Option<Vault> {
             self.vaults.get((owner, vault_id))
         }
 
+        /// Returns the account ID of the deployed ERC-20 token contract.
         #[ink(message)]
         pub fn get_token_address(&self) -> AccountId {
             self.token.to_account_id()
         }
 
+        /// Returns the account ID of the deployed auction contract.
         #[ink(message)]
         pub fn get_auction_address(&self) -> AccountId {
             self.auction.to_account_id()
         }
 
+        /// Returns the current contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) as percentages.
         #[ink(message)]
         pub fn get_contract_params(&self) -> VaultContractParamsPercentage {
             Self::contract_params_to_percentages(self.params)
         }
 
+        /// Sets the collateral-to-token price ratio for testing purposes; only callable by owner.
         #[ink(message)]
         pub fn set_collateral_token_price_for_testing(&mut self, price: Balance) -> Result<()> {
             if self.env().caller() != self.owner {
@@ -532,11 +546,13 @@ mod vault {
             Ok(())
         }
 
+        /// Returns the current collateral-to-token price ratio used for calculations.
         #[ink(message)]
         pub fn get_collateral_token_price_for_testing(&self) -> Balance {
             self.collateral_token_price
         }
 
+        /// Returns the collateral balance for a vault, or None if the vault does not exist.
         #[ink(message)]
         pub fn get_vault_collateral_balance(
             &self,
@@ -548,11 +564,13 @@ mod vault {
                 .map(|v| v.collateral_balance)
         }
 
+        /// Returns the total collateral balance across all vaults.
         #[ink(message)]
         pub fn get_total_collateral_balance(&self) -> Balance {
             self.total_collateral_balance
         }
 
+        /// Calculates the token value of a vault's collateral based on the current price ratio.
         #[ink(message)]
         pub fn get_vault_collateral_value(
             &self,
@@ -572,6 +590,7 @@ mod vault {
             Ok(collateral_value)
         }
 
+        /// Returns the maximum token amount that can be borrowed against a vault's collateral.
         #[ink(message)]
         pub fn get_max_borrow(&self, owner: AccountId, vault_id: u32) -> Result<Balance> {
             let vault = self
@@ -583,21 +602,25 @@ mod vault {
             Ok(max)
         }
 
+        /// Returns the auction ID for an active liquidation of a vault, or None if there is no active liquidation.
         #[ink(message)]
         pub fn get_liquidation_auction_id(&self, owner: AccountId, vault_id: u32) -> Option<u32> {
             self.liquidation_auctions.get((owner, vault_id))
         }
 
+        /// Returns the total number of vaults created across all owners.
         #[ink(message)]
         pub fn get_total_vaults_count(&self) -> u32 {
             self.vault_keys.len()
         }
 
+        /// Returns the number of vaults owned by a specific account.
         #[ink(message)]
         pub fn get_vaults_count(&self, owner: AccountId) -> u32 {
             self.vault_count.get(owner).unwrap_or_default()
         }
 
+        /// Returns a paginated list of vaults owned by a specific account.
         #[ink(message)]
         pub fn get_vaults(&self, owner: AccountId, page: u32) -> Result<Vec<Vault>> {
             let total_owner_vaults = self.vault_count.get(owner).unwrap_or_default();
@@ -616,6 +639,7 @@ mod vault {
             Ok(vaults)
         }
 
+        /// Returns a paginated list of all vaults across all owners.
         #[ink(message)]
         pub fn get_all_vaults(&self, page: u32) -> Result<Vec<Vault>> {
             let total_vaults = self.vault_keys.len();
