@@ -43,6 +43,7 @@ mod tusdt {
     pub type Result<T> = core::result::Result<T, Error>;
 
     impl TusdtErc20 {
+        /// Initializes the token contract with the specified owner account.
         #[ink(constructor)]
         pub fn new(owner: AccountId) -> Self {
             Self {
@@ -53,16 +54,19 @@ mod tusdt {
             }
         }
 
+        /// Returns the owner account ID.
         #[ink(message)]
         pub fn owner(&self) -> AccountId {
             self.owner
         }
 
+        /// Returns the total supply of tokens in circulation.
         #[ink(message)]
         pub fn total_supply(&self) -> Balance {
             self.total_supply
         }
 
+        /// Returns the token balance of an account.
         #[ink(message)]
         pub fn balance_of(&self, owner: AccountId) -> Balance {
             self.balance_of_impl(&owner)
@@ -73,6 +77,7 @@ mod tusdt {
             self.balances.get(owner).unwrap_or_default()
         }
 
+        /// Returns the amount of tokens that a spender is allowed to transfer from an owner's account.
         #[ink(message)]
         pub fn allowance(&self, owner: AccountId, spender: AccountId) -> Balance {
             self.allowance_impl(&owner, &spender)
@@ -91,12 +96,14 @@ mod tusdt {
             Ok(())
         }
 
+        /// Transfers tokens from the caller to a recipient account.
         #[ink(message)]
         pub fn transfer(&mut self, to: AccountId, value: Balance) -> Result<()> {
             let from = self.env().caller();
             self.transfer_from_to(&from, &to, value)
         }
 
+        /// Mints new tokens and adds them to an account's balance; only callable by owner.
         #[ink(message)]
         pub fn mint(&mut self, to: AccountId, value: Balance) -> Result<()> {
             self.ensure_owner()?;
@@ -121,6 +128,7 @@ mod tusdt {
             Ok(())
         }
 
+        /// Burns tokens from an account, reducing the total supply; only callable by owner.
         #[ink(message)]
         pub fn burn(&mut self, from: AccountId, value: Balance) -> Result<()> {
             self.ensure_owner()?;
@@ -145,6 +153,7 @@ mod tusdt {
             Ok(())
         }
 
+        /// Approves a spender to transfer up to a specified amount of tokens on behalf of the caller.
         #[ink(message)]
         pub fn approve(&mut self, spender: AccountId, value: Balance) -> Result<()> {
             let owner = self.env().caller();
@@ -157,6 +166,7 @@ mod tusdt {
             Ok(())
         }
 
+        /// Transfers tokens on behalf of an owner account to a recipient, using the caller's allowance.
         #[ink(message)]
         pub fn transfer_from(
             &mut self,

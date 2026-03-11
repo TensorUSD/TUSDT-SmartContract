@@ -132,6 +132,7 @@ mod auction {
     pub type Result<T> = core::result::Result<T, Error>;
 
     impl TusdtAuction {
+        /// Initializes the auction contract with owner, admin, and token contract reference.
         #[ink(constructor)]
         pub fn new(owner: AccountId, admin: AccountId, token_address: AccountId) -> Self {
             let token = TusdtErc20Ref::from_account_id(token_address);
@@ -151,6 +152,7 @@ mod auction {
             }
         }
 
+        /// Creates a new liquidation auction for a vault with specified collateral and debt, returning the auction ID.
         #[ink(message)]
         pub fn create_auction(
             &mut self,
@@ -222,6 +224,7 @@ mod auction {
             Ok(auction_id)
         }
 
+        /// Places a bid on an auction, transferring the bid amount and updating the highest bid if applicable.
         #[ink(message)]
         pub fn place_bid(
             &mut self,
@@ -278,6 +281,7 @@ mod auction {
             Ok(bid_id)
         }
 
+        /// Finalizes an auction after it has ended, marking the highest bidder as winner.
         #[ink(message)]
         pub fn finalize_auction(&mut self, auction_id: u32) -> Result<()> {
             let mut auction = self
@@ -313,6 +317,7 @@ mod auction {
             Ok(())
         }
 
+        /// Withdraws refund for a losing bid after the auction is finalized.
         #[ink(message)]
         pub fn withdraw_refund(&mut self, auction_id: u32, bid_id: u32) -> Result<()> {
             let caller = self.env().caller();
@@ -356,11 +361,13 @@ mod auction {
             Ok(())
         }
 
+        /// Retrieves the details of an auction by its ID.
         #[ink(message)]
         pub fn get_auction(&self, auction_id: u32) -> Option<Auction> {
             self.auctions.get(auction_id)
         }
 
+        /// Returns the active auction ID for a vault, or None if no active auction exists.
         #[ink(message)]
         pub fn get_active_vault_auction(
             &self,
@@ -370,11 +377,13 @@ mod auction {
             self.active_vault_auction.get((vault_owner, vault_id))
         }
 
+        /// Retrieves a specific bid from an auction by auction ID and bid ID.
         #[ink(message)]
         pub fn get_bid(&self, auction_id: u32, bid_id: u32) -> Option<Bid> {
             self.auction_bids.get((auction_id, bid_id))
         }
 
+        /// Returns a paginated list of all bids placed on an auction.
         #[ink(message)]
         pub fn get_bids(&self, auction_id: u32, page: u32) -> Result<Vec<Bid>> {
             let auction = self
@@ -398,16 +407,19 @@ mod auction {
             Ok(bids)
         }
 
+        /// Returns the total number of auctions created.
         #[ink(message)]
         pub fn get_total_auctions_count(&self) -> u32 {
             self.auction_count
         }
 
+        /// Returns the total number of active auctions.
         #[ink(message)]
         pub fn get_active_auctions_count(&self) -> u32 {
             self.active_auction_count
         }
 
+        /// Returns a paginated list of all auctions.
         #[ink(message)]
         pub fn get_all_auctions(&self, page: u32) -> Result<Vec<Auction>> {
             let total_auctions = self.auction_count;
@@ -426,6 +438,7 @@ mod auction {
             Ok(auctions)
         }
 
+        /// Returns a paginated list of active auctions.
         #[ink(message)]
         pub fn get_active_auctions(&self, page: u32) -> Result<Vec<Auction>> {
             let total_active_auctions = self.active_auction_count;
@@ -506,11 +519,13 @@ mod auction {
             Ok(())
         }
 
+        /// Returns the owner account ID.
         #[ink(message)]
         pub fn owner(&self) -> AccountId {
             self.owner
         }
 
+        /// Returns the admin account ID.
         #[ink(message)]
         pub fn admin(&self) -> AccountId {
             self.admin
