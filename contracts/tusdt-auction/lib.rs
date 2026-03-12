@@ -62,6 +62,7 @@ mod auction {
         auction_count: u32,
         auctions: Mapping<u32, Auction>,
         auction_bids: Mapping<(u32, u32), Bid>,
+        auction_bidder_bids: Mapping<(u32, AccountId), u32>,
 
         active_vault_auction: Mapping<(AccountId, u32), u32>,
         active_auction_count: u32,
@@ -128,10 +129,18 @@ mod auction {
         InvalidDuration,
         TransferFailed,
         NoRefundAvailable,
+        BidAmountNotIncreased,
         ArithmeticError,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
+
+    struct PreparedBid {
+        auction: Auction,
+        bid: Bid,
+        transfer_amount: Balance,
+        is_new_bid: bool,
+    }
 
     impl TusdtAuction {
         /// Initializes the auction contract with owner, admin, and token contract reference.
@@ -146,6 +155,7 @@ mod auction {
                 auction_count: 0,
                 auctions: Mapping::default(),
                 auction_bids: Mapping::default(),
+                auction_bidder_bids: Mapping::default(),
 
                 active_vault_auction: Mapping::default(),
                 active_auction_count: 0,
@@ -236,42 +246,26 @@ mod auction {
         ) -> Result<u32> {
             let bidder = self.env().caller();
 
-            let mut auction = self
+            let auction = self
                 .auctions
                 .get(auction_id)
                 .ok_or(Error::AuctionNotFound)?;
 
             self.ensure_bid_allowed(&auction, bidder)?;
-            if bid_amount < auction.debt_balance {
-                return Err(Error::BidBelowDebtBalance);
-            }
-
-            let bid_id = auction.bid_count;
-            auction.bid_count = auction
-                .bid_count
-                .checked_add(1)
-                .ok_or(Error::ArithmeticError)?;
-
-            let bid = Bid {
-                id: bid_id,
-                auction_id,
-                bidder,
-                amount: bid_amount,
-                metadata,
-                is_withdrawn: false,
-            };
-            self.auction_bids.insert((auction_id, bid_id), &bid);
-
-            if bid_amount > auction.highest_bid {
-                auction.highest_bidder = Some(bidder);
-                auction.highest_bid = bid_amount;
-                auction.highest_bid_id = Some(bid_id);
-            }
-            self.auctions.insert(auction_id, &auction);
+            let prepared = self.prepare_bid(auction, auction_id, bidder, bid_amount, metadata)?;
 
             self.token
-                .transfer_from(bidder, self.env().account_id(), bid_amount)
+                .transfer_from(bidder, self.env().account_id(), prepared.transfer_amount)
                 .map_err(|_| Error::TransferFailed)?;
+
+            let bid_id = prepared.bid.id;
+            self.auction_bids
+                .insert((auction_id, bid_id), &prepared.bid);
+            if prepared.is_new_bid {
+                self.auction_bidder_bids
+                    .insert((auction_id, bidder), &bid_id);
+            }
+            self.auctions.insert(auction_id, &prepared.auction);
 
             self.env().emit_event(BidPlaced {
                 auction_id,
@@ -281,6 +275,69 @@ mod auction {
             });
 
             Ok(bid_id)
+        }
+
+        fn prepare_bid(
+            &self,
+            mut auction: Auction,
+            auction_id: u32,
+            bidder: AccountId,
+            bid_amount: Balance,
+            metadata: Option<BidMetadata>,
+        ) -> Result<PreparedBid> {
+            if bid_amount < auction.debt_balance {
+                return Err(Error::BidBelowDebtBalance);
+            }
+
+            let existing_bid_id = self.auction_bidder_bids.get((auction_id, bidder));
+            let (bid, transfer_amount, is_new_bid) = if let Some(bid_id) = existing_bid_id {
+                let mut bid = self
+                    .auction_bids
+                    .get((auction_id, bid_id))
+                    .ok_or(Error::BidNotFound)?;
+                if bid_amount <= bid.amount {
+                    return Err(Error::BidAmountNotIncreased);
+                }
+
+                let transfer_amount = bid_amount
+                    .checked_sub(bid.amount)
+                    .ok_or(Error::ArithmeticError)?;
+                bid.amount = bid_amount;
+                bid.metadata = metadata;
+                (bid, transfer_amount, false)
+            } else {
+                let bid_id = auction.bid_count;
+                auction.bid_count = auction
+                    .bid_count
+                    .checked_add(1)
+                    .ok_or(Error::ArithmeticError)?;
+
+                (
+                    Bid {
+                        id: bid_id,
+                        auction_id,
+                        bidder,
+                        amount: bid_amount,
+                        metadata,
+                        is_withdrawn: false,
+                    },
+                    bid_amount,
+                    true,
+                )
+            };
+
+            if bid_amount > auction.highest_bid {
+                auction.highest_bidder = Some(bidder);
+                auction.highest_bid = bid_amount;
+                auction.highest_bid_id = Some(bid.id);
+            }
+
+            Ok(PreparedBid {
+                auction,
+                bid,
+                transfer_amount,
+                is_new_bid,
+            })
         }
 
         /// Finalizes an auction after it has ended, marking the highest bidder as winner.
@@ -387,6 +444,13 @@ mod auction {
         /// Retrieves a specific bid from an auction by auction ID and bid ID.
         #[ink(message)]
         pub fn get_bid(&self, auction_id: u32, bid_id: u32) -> Option<Bid> {
+            self.auction_bids.get((auction_id, bid_id))
+        }
+
+        /// Retrieves a specific bid from an auction by auction ID and Bidder.
+        #[ink(message)]
+        pub fn get_auction_bid(&self, auction_id: u32, bidder: AccountId) -> Option<Bid> {
+            let bid_id = self.auction_bidder_bids.get((auction_id, bidder))?;
             self.auction_bids.get((auction_id, bid_id))
         }
 
@@ -568,6 +632,7 @@ mod auction {
                     is_withdrawn: false,
                 },
             );
+            self.auction_bidder_bids.insert((auction_id, bidder), &0);
 
             Ok(())
         }

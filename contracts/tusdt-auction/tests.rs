@@ -148,12 +148,20 @@ fn finalize_auction_fails_without_bids_after_end() {
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 3);
     set_time(1_200);
-    assert_eq!(auction.finalize_auction(auction_id), Err(Error::AuctionHasNoBids));
+    assert_eq!(
+        auction.finalize_auction(auction_id),
+        Err(Error::AuctionHasNoBids)
+    );
 
-    let pending = auction.get_auction(auction_id).expect("auction should exist");
+    let pending = auction
+        .get_auction(auction_id)
+        .expect("auction should exist");
     assert_eq!(pending.is_finalized, false);
     assert_eq!(auction.get_active_auctions_count(), 1);
-    assert_eq!(auction.get_active_vault_auction(accounts.bob, 3), Some(auction_id));
+    assert_eq!(
+        auction.get_active_vault_auction(accounts.bob, 3),
+        Some(auction_id)
+    );
 }
 
 #[ink::test]
@@ -310,11 +318,32 @@ fn get_bids_returns_empty_for_out_of_bounds_page_when_no_bids() {
 }
 
 #[ink::test]
-fn withdraw_refund_fails_when_bid_not_found() {
+fn get_auction_bid_returns_bid_for_bidder() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 14);
+    auction
+        .seed_bid_for_test(auction_id, accounts.django, 600)
+        .expect("test setup should seed a bid");
+
+    let bid = auction
+        .get_auction_bid(auction_id, accounts.django)
+        .expect("bid should exist");
+    assert_eq!(bid.id, 0);
+    assert_eq!(bid.auction_id, auction_id);
+    assert_eq!(bid.bidder, accounts.django);
+    assert_eq!(bid.amount, 600);
+
+    assert!(auction.get_auction_bid(auction_id, accounts.eve).is_none());
+}
+
+#[ink::test]
+fn withdraw_refund_fails_when_bid_not_found() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+
+    let auction_id = create_default_auction(&mut auction, accounts.bob, 15);
     assert_eq!(
         auction.withdraw_refund(auction_id, 0),
         Err(Error::BidNotFound)
