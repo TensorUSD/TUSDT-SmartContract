@@ -11,6 +11,7 @@ members = [
     "primitives",
     "contracts/tusdt-erc20",
     "contracts/tusdt-auction",
+    "contracts/tusdt-oracle",
     "contracts/tusdt-vault",
 ]
 resolver = "2"

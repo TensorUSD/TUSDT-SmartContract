@@ -6993,6 +6993,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tusdt-oracle"
+version = "0.1.0"
+dependencies = [
+ "ink",
+ "ink_e2e",
+ "tusdt-env",
+ "tusdt-primitives",
+]
+
+[[package]]
 name = "tusdt-primitives"
 version = "0.1.0"
 dependencies = [
@@ -7009,6 +7019,7 @@ dependencies = [
  "tusdt-auction",
  "tusdt-env",
  "tusdt-erc20",
+ "tusdt-oracle",
  "tusdt-primitives",
 ]
 

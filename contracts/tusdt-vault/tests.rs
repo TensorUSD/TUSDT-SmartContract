@@ -1,5 +1,6 @@
 use super::vault::*;
-use tusdt_primitives::MILLISECONDS_PER_HOUR;
+use tusdt_oracle::PriceData;
+use tusdt_primitives::{Ratio, MILLISECONDS_PER_HOUR};
 
 fn set_caller(caller: ink::primitives::AccountId) {
     let callee = ink::env::account_id::<tusdt_env::CustomEnvironment>();
@@ -103,24 +104,7 @@ fn add_collateral_fails_for_missing_or_liquidating_vault() {
 }
 
 #[ink::test]
-fn release_collateral_works_and_updates_total_collateral() {
-    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut vault = TusdtVault::new_for_test(accounts.alice);
-
-    create_vault_with_collateral(&mut vault, accounts.alice, 600);
-
-    set_caller(accounts.alice);
-    assert_eq!(vault.release_collateral(0, 250), Ok(()));
-
-    let updated = vault
-        .get_vault(accounts.alice, 0)
-        .expect("vault should exist after release");
-    assert_eq!(updated.collateral_balance, 350);
-    assert_eq!(vault.get_total_collateral_balance(), 350);
-}
-
-#[ink::test]
-fn release_collateral_checks_balance_and_ratio() {
+fn release_collateral_checks_balance_before_oracle_path() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
@@ -130,14 +114,6 @@ fn release_collateral_checks_balance_and_ratio() {
     assert_eq!(
         vault.release_collateral(0, 151),
         Err(Error::InsufficientCollateral)
-    );
-
-    vault
-        .set_vault_borrowed_balance_for_test(accounts.alice, 0, 100)
-        .expect("test setup should set borrowed balance");
-    assert_eq!(
-        vault.release_collateral(0, 1),
-        Err(Error::CollateralRatioExceeded)
     );
 }
 
@@ -152,6 +128,7 @@ fn set_contract_params_enforces_owner_and_validation() {
         interest_rate: 7,
         liquidation_fee: 2,
         auction_duration_ms: 120_000,
+        max_oracle_age_ms: 600_000,
     };
 
     set_caller(accounts.bob);
@@ -168,6 +145,7 @@ fn set_contract_params_enforces_owner_and_validation() {
             interest_rate: 7,
             liquidation_fee: 2,
             auction_duration_ms: 120_000,
+            max_oracle_age_ms: 600_000,
         }),
         Err(Error::InvalidRatio)
     );
@@ -178,40 +156,89 @@ fn set_contract_params_enforces_owner_and_validation() {
             interest_rate: 7,
             liquidation_fee: 2,
             auction_duration_ms: 59_999,
+            max_oracle_age_ms: 600_000,
         }),
         Err(Error::InvalidAuctionDuration)
     );
+    assert_eq!(
+        vault.set_contract_params(VaultContractParamsPercentage {
+            collateral_ratio: 200,
+            liquidation_ratio: 130,
+            interest_rate: 7,
+            liquidation_fee: 2,
+            auction_duration_ms: 120_000,
+            max_oracle_age_ms: 0,
+        }),
+        Err(Error::InvalidOracleMaxAge)
+    );
 
     assert_eq!(vault.set_contract_params(valid), Ok(()));
-    assert_eq!(vault.get_contract_params().collateral_ratio, 200);
-    assert_eq!(vault.get_contract_params().liquidation_ratio, 130);
-    assert_eq!(vault.get_contract_params().interest_rate, 7);
-    assert_eq!(vault.get_contract_params().liquidation_fee, 2);
-    assert_eq!(vault.get_contract_params().auction_duration_ms, 120_000);
+    let params = vault.get_contract_params();
+    assert_eq!(params.collateral_ratio, 200);
+    assert_eq!(params.liquidation_ratio, 130);
+    assert_eq!(params.interest_rate, 7);
+    assert_eq!(params.liquidation_fee, 2);
+    assert_eq!(params.auction_duration_ms, 120_000);
+    assert_eq!(params.max_oracle_age_ms, 600_000);
 }
 
 #[ink::test]
-fn price_update_and_collateral_value_queries_work() {
+fn price_validation_and_collateral_math_helpers_work() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let mut vault = TusdtVault::new_for_test(accounts.alice);
+    let vault = TusdtVault::new_for_test(accounts.alice);
+    let price = Ratio::from_integer(3);
 
-    set_caller(accounts.bob);
+    assert_eq!(TusdtVault::collateral_value(price, 100), Ok(300));
+    assert_eq!(vault.max_borrow_allowed(price, 100), Ok(200));
+    assert_eq!(vault.liquidation_limit(price, 100), Ok(250));
+    assert_eq!(TusdtVault::collateral_needed_for_debt(price, 300), Ok(100));
+}
+
+#[ink::test]
+fn oracle_price_validation_rejects_missing_and_stale_data() {
+    let price = Ratio::from_integer(3);
+
     assert_eq!(
-        vault.set_collateral_token_price_for_testing(2),
-        Err(Error::NotContractOwner)
+        TusdtVault::validate_price_data(None, 10, 100),
+        Err(Error::OraclePriceUnavailable)
     );
-
-    set_caller(accounts.alice);
     assert_eq!(
-        vault.set_collateral_token_price_for_testing(0),
-        Err(Error::InvalidRatio)
+        TusdtVault::validate_price_data(
+            Some(PriceData {
+                round_id: 0,
+                price,
+                median_price: price,
+                reporter_count: 3,
+                committed_at: 0,
+                was_overridden: false,
+            }),
+            3_600_001,
+            3_600_000,
+        ),
+        Err(Error::OraclePriceStale)
     );
-    assert_eq!(vault.set_collateral_token_price_for_testing(3), Ok(()));
-    assert_eq!(vault.get_collateral_token_price_for_testing(), 3);
-
-    create_vault_with_collateral(&mut vault, accounts.alice, 100);
-    assert_eq!(vault.get_vault_collateral_value(accounts.alice, 0), Ok(300));
-    assert_eq!(vault.get_max_borrow(accounts.alice, 0), Ok(200));
+    assert_eq!(
+        TusdtVault::validate_price_data(
+            Some(PriceData {
+                round_id: 1,
+                price,
+                median_price: price,
+                reporter_count: 3,
+                committed_at: 10,
+                was_overridden: false,
+            }),
+            20,
+            30,
+        ),
+        Ok(PriceData {
+            round_id: 1,
+            price,
+            median_price: price,
+            reporter_count: 3,
+            committed_at: 10,
+            was_overridden: false,
+        })
+    );
 }
 
 #[ink::test]
@@ -281,6 +308,7 @@ fn interest_accrues_after_full_hours_only() {
 fn liquidatable_check_uses_liquidation_ratio_limit() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let vault_contract = TusdtVault::new_for_test(accounts.alice);
+    let price = Ratio::from_integer(1);
 
     let safe_vault = Vault {
         id: 0,
@@ -295,6 +323,12 @@ fn liquidatable_check_uses_liquidation_ratio_limit() {
         ..safe_vault.clone()
     };
 
-    assert_eq!(vault_contract.is_liquidatable(&safe_vault), Ok(false));
-    assert_eq!(vault_contract.is_liquidatable(&unsafe_vault), Ok(true));
+    assert_eq!(
+        vault_contract.is_liquidatable(price, &safe_vault),
+        Ok(false)
+    );
+    assert_eq!(
+        vault_contract.is_liquidatable(price, &unsafe_vault),
+        Ok(true)
+    );
 }

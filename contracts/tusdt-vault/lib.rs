@@ -9,6 +9,7 @@ mod vault {
 
     use tusdt_auction::TusdtAuctionRef;
     use tusdt_erc20::TusdtErc20Ref;
+    use tusdt_oracle::{PriceData, TusdtOracleRef};
     use tusdt_primitives::Ratio;
 
     const PAGE_SIZE: u32 = 10;
@@ -47,6 +48,7 @@ mod vault {
         pub interest_rate: Ratio,
         pub liquidation_fee: Ratio,
         pub auction_duration_ms: u64,
+        pub max_oracle_age_ms: u64,
     }
 
     #[derive(Debug, Copy, Clone)]
@@ -58,6 +60,7 @@ mod vault {
         pub interest_rate: u32,
         pub liquidation_fee: u32,
         pub auction_duration_ms: u64,
+        pub max_oracle_age_ms: u64,
     }
 
     #[ink(storage)]
@@ -68,9 +71,8 @@ mod vault {
         token: TusdtErc20Ref,
         // Auction contract address
         auction: TusdtAuctionRef,
-        // TEMPORARY: test-only collateral price oracle replacement.
-        // Represents borrow-token units per 1 collateral token.
-        collateral_token_price: Balance,
+        // External oracle providing raw TUSDT units per 1 raw collateral unit.
+        oracle: TusdtOracleRef,
         total_collateral_balance: Balance,
 
         params: VaultContractParams,
@@ -176,6 +178,10 @@ mod vault {
         AuctionNotFinalized,
         ArithmeticError,
         NotContractOwner,
+        OracleCallFailed,
+        OraclePriceUnavailable,
+        OraclePriceStale,
+        InvalidOracleMaxAge,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
@@ -183,7 +189,11 @@ mod vault {
     impl TusdtVault {
         /// Initializes the vault contract by instantiating the token and auction contracts with the provided code hashes.
         #[ink(constructor)]
-        pub fn new(token_code_hash: Hash, auction_code_hash: Hash) -> Self {
+        pub fn new(
+            token_code_hash: Hash,
+            auction_code_hash: Hash,
+            oracle_code_hash: Hash,
+        ) -> Self {
             let owner = Self::env().caller();
 
             let contract_account = Self::env().account_id();
@@ -197,6 +207,11 @@ mod vault {
                 .endowment(0)
                 .salt_bytes([1; 32])
                 .instantiate();
+            let oracle = TusdtOracleRef::new(owner)
+                .code_hash(oracle_code_hash)
+                .endowment(0)
+                .salt_bytes([2; 32])
+                .instantiate();
 
             let params = Self::default_contract_params();
 
@@ -204,7 +219,7 @@ mod vault {
                 owner,
                 token,
                 auction,
-                collateral_token_price: 1,
+                oracle,
                 total_collateral_balance: 0,
                 params,
                 vaults: Mapping::default(),
@@ -296,8 +311,9 @@ mod vault {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             self.accrue_interest(&mut vault)?;
+            let price = self.current_collateral_price()?;
 
-            let max_borrow = self.max_borrow_allowed(vault.collateral_balance)?;
+            let max_borrow = self.max_borrow_allowed(price, vault.collateral_balance)?;
             let projected_borrowed = vault
                 .borrowed_token_balance
                 .checked_add(amount)
@@ -366,9 +382,13 @@ mod vault {
                 .collateral_balance
                 .checked_sub(amount)
                 .ok_or(Error::ArithmeticError)?;
-            let max_borrow_after_release = self.max_borrow_allowed(projected_collateral)?;
-            if vault.borrowed_token_balance > max_borrow_after_release {
-                return Err(Error::CollateralRatioExceeded);
+            if vault.borrowed_token_balance > 0 {
+                let price = self.current_collateral_price()?;
+                let max_borrow_after_release =
+                    self.max_borrow_allowed(price, projected_collateral)?;
+                if vault.borrowed_token_balance > max_borrow_after_release {
+                    return Err(Error::CollateralRatioExceeded);
+                }
             }
 
             if self.env().transfer(caller, amount).is_err() {
@@ -404,15 +424,14 @@ mod vault {
 
             let mut vault = self.load_vault(owner, vault_id)?;
             self.accrue_interest(&mut vault)?;
+            let price = self.current_collateral_price()?;
 
-            if !self.is_liquidatable(&vault)? {
+            if !self.is_liquidatable(price, &vault)? {
                 return Err(Error::NotLiquidatable);
             }
 
-            let collateral_debt = vault
-                .borrowed_token_balance
-                .checked_div(self.collateral_token_price)
-                .ok_or(Error::ArithmeticError)?;
+            let collateral_debt =
+                Self::collateral_needed_for_debt(price, vault.borrowed_token_balance)?;
             let liquidation_fee = self
                 .params
                 .liquidation_fee
@@ -527,29 +546,16 @@ mod vault {
             self.auction.to_account_id()
         }
 
+        /// Returns the account ID of the oracle contract.
+        #[ink(message)]
+        pub fn get_oracle_address(&self) -> AccountId {
+            self.oracle.to_account_id()
+        }
+
         /// Returns the current contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) as percentages.
         #[ink(message)]
         pub fn get_contract_params(&self) -> VaultContractParamsPercentage {
             Self::contract_params_to_percentages(self.params)
-        }
-
-        /// Sets the collateral-to-token price ratio for testing purposes; only callable by owner.
-        #[ink(message)]
-        pub fn set_collateral_token_price_for_testing(&mut self, price: Balance) -> Result<()> {
-            if self.env().caller() != self.owner {
-                return Err(Error::NotContractOwner);
-            }
-            if price == 0 {
-                return Err(Error::InvalidRatio);
-            }
-            self.collateral_token_price = price;
-            Ok(())
-        }
-
-        /// Returns the current collateral-to-token price ratio used for calculations.
-        #[ink(message)]
-        pub fn get_collateral_token_price_for_testing(&self) -> Balance {
-            self.collateral_token_price
         }
 
         /// Returns the collateral balance for a vault, or None if the vault does not exist.
@@ -581,13 +587,8 @@ mod vault {
                 .vaults
                 .get((owner, vault_id))
                 .ok_or(Error::VaultNotFound)?;
-
-            let collateral_value = self
-                .collateral_token_price
-                .checked_mul(vault.collateral_balance)
-                .ok_or(Error::ArithmeticError)?;
-
-            Ok(collateral_value)
+            let price = self.current_collateral_price()?;
+            Self::collateral_value(price, vault.collateral_balance)
         }
 
         /// Returns the maximum token amount that can be borrowed against a vault's collateral.
@@ -597,7 +598,8 @@ mod vault {
                 .vaults
                 .get((owner, vault_id))
                 .ok_or(Error::VaultNotFound)?;
-            let max = self.max_borrow_allowed(vault.collateral_balance)?;
+            let price = self.current_collateral_price()?;
+            let max = self.max_borrow_allowed(price, vault.collateral_balance)?;
 
             Ok(max)
         }
@@ -658,6 +660,33 @@ mod vault {
 
             Ok(vaults)
         }
+
+        pub(crate) fn validate_price_data(
+            price_data: Option<PriceData>,
+            now: u64,
+            max_oracle_age_ms: u64,
+        ) -> Result<PriceData> {
+            let price_data = price_data.ok_or(Error::OraclePriceUnavailable)?;
+            let age = now
+                .checked_sub(price_data.committed_at)
+                .ok_or(Error::OraclePriceStale)?;
+            if age > max_oracle_age_ms {
+                return Err(Error::OraclePriceStale);
+            }
+            if price_data.price.is_zero() {
+                return Err(Error::OraclePriceUnavailable);
+            }
+            Ok(price_data)
+        }
+
+        pub(crate) fn current_collateral_price(&self) -> Result<Ratio> {
+            let price_data = Self::validate_price_data(
+                self.oracle.get_latest_price(),
+                self.env().block_timestamp(),
+                self.params.max_oracle_age_ms,
+            )?;
+            Ok(price_data.price)
+        }
     }
 
     #[cfg(test)]
@@ -671,7 +700,7 @@ mod vault {
                 owner,
                 token: TusdtErc20Ref::from_account_id(accounts.charlie),
                 auction: TusdtAuctionRef::from_account_id(accounts.django),
-                collateral_token_price: 1,
+                oracle: TusdtOracleRef::from_account_id(accounts.eve),
                 total_collateral_balance: 0,
                 params: Self::default_contract_params(),
                 vaults: Mapping::default(),
@@ -679,18 +708,6 @@ mod vault {
                 vault_keys: StorageVec::default(),
                 liquidation_auctions: Mapping::default(),
             }
-        }
-
-        pub(crate) fn set_vault_borrowed_balance_for_test(
-            &mut self,
-            owner: AccountId,
-            vault_id: u32,
-            borrowed_token_balance: Balance,
-        ) -> Result<()> {
-            let mut vault = self.load_vault(owner, vault_id)?;
-            vault.borrowed_token_balance = borrowed_token_balance;
-            self.save_vault(owner, vault_id, &vault);
-            Ok(())
         }
 
         pub(crate) fn set_liquidation_auction_for_test(

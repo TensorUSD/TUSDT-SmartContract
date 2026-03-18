@@ -28,6 +28,14 @@ impl Ratio {
         Self(value.into_inner())
     }
 
+    pub fn from_integer(value: u128) -> Self {
+        Self(
+            FixedU128::checked_from_integer(value)
+                .expect("integer ratio should fit in fixed-point representation")
+                .into_inner(),
+        )
+    }
+
     pub fn from_percentage(percent: u32) -> Self {
         Self(from_percentage(percent).into_inner())
     }
