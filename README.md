@@ -7,6 +7,7 @@ Ink! contracts for a collateralized TUSDT system with vault borrowing, interest 
 - Rust stable toolchain
 - `wasm32-unknown-unknown` target
 - `cargo-contract`
+- Node.js + Yarn (for the isolated contract tooling under `tools/`)
 - A Contracts-enabled Substrate node (local or remote)
 
 ```bash
@@ -32,6 +33,42 @@ cargo contract build --manifest-path contracts/tusdt-vault/Cargo.toml
 ```
 
 Artifacts are produced in `target/ink/`.
+
+## Contract Tooling (`tools/`)
+
+Shared deployment scripts and on-chain tests live in an isolated TypeScript subproject under `tools/`.
+The current iteration exposes upload support for `erc20`, `auction`, `oracle`, and `vault`, plus a single `vault` deployment entrypoint that instantiates the whole runtime flow. 
+
+Setup:
+
+```bash
+cd tools
+yarn install
+cp .env.example .env
+```
+
+Default `.env` values target a local dev node:
+
+- `WS_URL=ws://127.0.0.1:9944`
+
+Scripts and tests use the standard local dev accounts (`//Alice`, `//Bob`, `//Charlie`, `//Dave`, `//Eve`, `//Ferdie`) from the shared dev-account helper.
+When needed, you can override the selected account via SURI environment variables such as `CONTRACT_UPLOADER=//Alice`, `CONTRACT_DEPLOYER=//Alice`.
+
+Useful commands:
+
+```bash
+cd tools
+yarn build:erc20-artifacts
+yarn build:auction-artifacts
+yarn build:oracle-artifacts
+yarn build:vault-artifacts
+yarn erc20:upload
+yarn auction:upload
+yarn oracle:upload
+yarn vault:upload
+yarn vault:deploy --token-code-hash <TOKEN_CODE_HASH> --auction-code-hash <AUCTION_CODE_HASH> --oracle-code-hash <ORACLE_CODE_HASH>
+yarn test:oracle
+```
 
 ## Deployment (Recommended Order)
 
@@ -68,6 +105,9 @@ cargo contract instantiate \
   --args <ERC20_CODE_HASH> <AUCTION_CODE_HASH> <ORACLE_CODE_HASH> \
   --suri //Alice --url ws://127.0.0.1:9944
 ```
+
+Prefer the `tools/` workflow above instead of using `cargo contract` for upload/deploy operations where a TS script already exists.
+The current e2e test suite is intentionally oracle-only, and the only deployment script entrypoint is `vault:deploy`.
 
 ## Working Flow
 

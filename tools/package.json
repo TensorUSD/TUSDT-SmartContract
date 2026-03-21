@@ -1,0 +1,33 @@
+{
+  "name": "tusdt-contract-tools",
+  "private": true,
+  "type": "module",
+  "packageManager": "yarn@1.22.22",
+  "scripts": {
+    "build:erc20-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-erc20/Cargo.toml",
+    "build:auction-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-auction/Cargo.toml",
+    "build:oracle-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-oracle/Cargo.toml",
+    "build:vault-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-vault/Cargo.toml",
+    "erc20:upload": "node --import tsx scripts/uploadContract.ts --contract erc20",
+    "auction:upload": "node --import tsx scripts/uploadContract.ts --contract auction",
+    "oracle:upload": "node --import tsx scripts/uploadContract.ts --contract oracle",
+    "vault:upload": "node --import tsx scripts/uploadContract.ts --contract vault",
+    "vault:deploy": "node --import tsx scripts/deployVault.ts",
+    "test:oracle": "vitest run e2e/oracle.test.ts"
+  },
+  "dependencies": {
+    "@polkadot/api": "latest",
+    "@polkadot/api-contract": "latest",
+    "@polkadot/keyring": "latest",
+    "@polkadot/util": "latest",
+    "@polkadot/util-crypto": "latest",
+    "dotenv": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vitest": "latest"
+  }
+}

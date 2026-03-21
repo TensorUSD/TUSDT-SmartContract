@@ -3,3 +3,7 @@
 
 # Ignore backup files creates by cargo fmt.
 **/*.rs.bk
+
+# Ignore isolated Node tooling artifacts.
+/tools/node_modules/
+/tools/.env

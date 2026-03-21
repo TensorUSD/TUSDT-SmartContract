@@ -1,0 +1,228 @@
+import { ContractPromise } from "@polkadot/api-contract";
+import type { ApiPromise } from "@polkadot/api";
+import type { KeyringPair } from "@polkadot/keyring/types";
+
+import { loadContractArtifact } from "../artifact.js";
+import {
+  formatInkError,
+  parseIntegerArg,
+  pickProperty,
+  ratioFromInteger,
+  ratioInnerToDisplay,
+  toNumber,
+  toPrimitive,
+} from "../codec.js";
+import {
+  type ExtrinsicWaitFor,
+  queryMessage,
+  txMessage,
+} from "../contract.js";
+import { deployOracle as deployOracleContract } from "../deployment.js";
+
+export interface OracleRoundSummary {
+  roundId: number;
+  reporterCount: number;
+  medianPrice: string | null;
+}
+
+export interface OraclePriceData {
+  roundId: number;
+  price: string | null;
+  medianPrice: string | null;
+  reporterCount: number;
+  committedAt: number;
+  wasOverridden: boolean;
+}
+
+export function parseCliFlag(name: string): string | undefined {
+  const args = process.argv.slice(2);
+  const index = args.indexOf(name);
+  if (index === -1 || index + 1 >= args.length) {
+    return undefined;
+  }
+
+  return args[index + 1];
+}
+
+export function parseBooleanFlag(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  return value.toLowerCase() !== "false";
+}
+
+export async function deployOracle(
+  api: ApiPromise,
+  signer: KeyringPair,
+  ownerAddress = signer.address,
+  waitFor: ExtrinsicWaitFor = "inBlock",
+): Promise<ContractPromise> {
+  return deployOracleContract(api, signer, ownerAddress, waitFor);
+}
+
+export function getOracleContract(api: ApiPromise, address: string): ContractPromise {
+  const artifact = loadContractArtifact("oracle");
+  return new ContractPromise(api, artifact.abi, address);
+}
+
+export async function setReporter(
+  api: ApiPromise,
+  oracle: ContractPromise,
+  signer: KeyringPair,
+  reporter: string,
+  enabled: boolean,
+) {
+  return txMessage(api, oracle, "set_reporter", signer, [reporter, enabled]);
+}
+
+export async function submitPrice(
+  api: ApiPromise,
+  oracle: ContractPromise,
+  signer: KeyringPair,
+  priceInteger: bigint | number | string,
+) {
+  return txMessage(api, oracle, "submit_price", signer, [ratioFromInteger(priceInteger)]);
+}
+
+export async function commitRound(
+  api: ApiPromise,
+  oracle: ContractPromise,
+  signer: KeyringPair,
+  overrideInteger?: bigint | number | string,
+) {
+  const overrideArg =
+    overrideInteger === undefined ? null : ratioFromInteger(overrideInteger);
+  return txMessage(api, oracle, "commit_round", signer, [overrideArg]);
+}
+
+export async function dryRunSubmitPrice(
+  oracle: ContractPromise,
+  callerAddress: string,
+  priceInteger: bigint | number | string,
+) {
+  return queryMessage(oracle, "submit_price", callerAddress, [
+    ratioFromInteger(priceInteger),
+  ]);
+}
+
+export async function dryRunCommitRound(
+  oracle: ContractPromise,
+  callerAddress: string,
+  overrideInteger?: bigint | number | string,
+) {
+  const overrideArg =
+    overrideInteger === undefined ? null : ratioFromInteger(overrideInteger);
+  return queryMessage(oracle, "commit_round", callerAddress, [overrideArg]);
+}
+
+export async function queryOwner(
+  oracle: ContractPromise,
+  callerAddress: string,
+): Promise<string> {
+  const result = await queryMessage(oracle, "owner", callerAddress);
+  if (!result.decoded.ok) {
+    throw new Error(formatInkError(result.decoded.error));
+  }
+
+  return String(result.decoded.value);
+}
+
+export async function queryIsReporter(
+  oracle: ContractPromise,
+  callerAddress: string,
+  account: string,
+): Promise<boolean> {
+  const result = await queryMessage(oracle, "is_reporter", callerAddress, [account]);
+  if (!result.decoded.ok) {
+    throw new Error(formatInkError(result.decoded.error));
+  }
+
+  return Boolean(result.decoded.value);
+}
+
+export async function queryCurrentRoundId(
+  oracle: ContractPromise,
+  callerAddress: string,
+): Promise<number> {
+  const result = await queryMessage(oracle, "current_round_id", callerAddress);
+  if (!result.decoded.ok) {
+    throw new Error(formatInkError(result.decoded.error));
+  }
+
+  return toNumber(result.decoded.value);
+}
+
+export async function queryCurrentRoundSummary(
+  oracle: ContractPromise,
+  callerAddress: string,
+): Promise<OracleRoundSummary> {
+  const result = await queryMessage(
+    oracle,
+    "get_current_round_summary",
+    callerAddress,
+  );
+  if (!result.decoded.ok) {
+    throw new Error(formatInkError(result.decoded.error));
+  }
+
+  const summary = toPrimitive(result.decoded.value);
+  return {
+    roundId: toNumber(pickProperty(summary, "round_id", "roundId")),
+    reporterCount: toNumber(
+      pickProperty(summary, "reporter_count", "reporterCount"),
+    ),
+    medianPrice: ratioInnerToDisplay(
+      pickProperty(summary, "median_price", "medianPrice"),
+    ),
+  };
+}
+
+export async function queryLatestPrice(
+  oracle: ContractPromise,
+  callerAddress: string,
+): Promise<OraclePriceData | null> {
+  const result = await queryMessage(oracle, "get_latest_price", callerAddress);
+  if (!result.decoded.ok) {
+    throw new Error(formatInkError(result.decoded.error));
+  }
+
+  const maybePrice = result.decoded.value;
+  if (maybePrice === null || maybePrice === undefined) {
+    return null;
+  }
+
+  const priceData = toPrimitive(maybePrice);
+  return {
+    roundId: toNumber(pickProperty(priceData, "round_id", "roundId")),
+    price: ratioInnerToDisplay(pickProperty(priceData, "price")),
+    medianPrice: ratioInnerToDisplay(
+      pickProperty(priceData, "median_price", "medianPrice"),
+    ),
+    reporterCount: toNumber(
+      pickProperty(priceData, "reporter_count", "reporterCount"),
+    ),
+    committedAt: toNumber(
+      pickProperty(priceData, "committed_at", "committedAt"),
+    ),
+    wasOverridden: Boolean(
+      pickProperty(priceData, "was_overridden", "wasOverridden"),
+    ),
+  };
+}
+
+export function requireAddress(value: string | undefined): string {
+  if (!value) {
+    throw new Error("Oracle address is required. Pass --address or set ORACLE_ADDRESS.");
+  }
+
+  return value;
+}
+
+export function requirePrice(value: string | undefined, label = "price"): bigint {
+  if (!value) {
+    throw new Error(`Missing ${label}. Pass --price or set ${label.toUpperCase()}.`);
+  }
+
+  return parseIntegerArg(value, label);
+}

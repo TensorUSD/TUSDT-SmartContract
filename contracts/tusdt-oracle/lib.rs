@@ -108,7 +108,8 @@ mod oracle {
             let replaced_existing = self.round_submissions.get((round_id, reporter)).is_some();
             if !replaced_existing {
                 let reporter_count = self.round_reporter_count.get(round_id).unwrap_or(0);
-                self.round_reporters.insert((round_id, reporter_count), &reporter);
+                self.round_reporters
+                    .insert((round_id, reporter_count), &reporter);
                 self.round_reporter_count.insert(
                     round_id,
                     &reporter_count
@@ -239,7 +240,7 @@ mod oracle {
             }
 
             prices.sort_unstable();
-            let middle_index = (prices.len() - 1) / 2;
+            let middle_index = prices.len().saturating_sub(1) / 2;
             Ok(prices.get(middle_index).copied())
         }
     }
