@@ -75,6 +75,7 @@ mod oracle {
         NotReporter,
         InvalidPrice,
         NotEnoughSubmissions,
+        MedianUnavailable,
         ArithmeticError,
     }
 
@@ -136,19 +137,18 @@ mod oracle {
 
             let round_id = self.current_round_id;
             let reporter_count = self.round_reporter_count.get(round_id).unwrap_or(0);
-            if reporter_count < MIN_REPORTERS {
-                return Err(Error::NotEnoughSubmissions);
-            }
-
-            let median_price = self
-                .compute_round_median(round_id)?
-                .ok_or(Error::NotEnoughSubmissions)?;
-            let committed_price = match override_price {
+            let round_median = self.compute_round_median(round_id)?;
+            let (committed_price, median_price, was_overridden) = match override_price {
                 Some(price) if price.is_zero() => return Err(Error::InvalidPrice),
-                Some(price) => price,
-                None => median_price,
+                Some(price) => (price, round_median.unwrap_or(price), true),
+                None => {
+                    if reporter_count < MIN_REPORTERS {
+                        return Err(Error::NotEnoughSubmissions);
+                    }
+                    let median_price = round_median.ok_or(Error::MedianUnavailable)?;
+                    (median_price, median_price, false)
+                }
             };
-            let was_overridden = override_price.is_some();
             let price_data = PriceData {
                 round_id,
                 price: committed_price,

@@ -87,6 +87,60 @@ fn commit_is_blocked_below_quorum() {
 }
 
 #[ink::test]
+fn override_allows_commit_without_submissions() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice);
+
+    set_time(55);
+    let committed = oracle
+        .commit_round(Some(Ratio::from_integer(42)))
+        .expect("override commit should succeed");
+
+    assert_eq!(
+        committed,
+        PriceData {
+            round_id: 0,
+            price: Ratio::from_integer(42),
+            median_price: Ratio::from_integer(42),
+            reporter_count: 0,
+            committed_at: 55,
+            was_overridden: true,
+        }
+    );
+    assert_eq!(oracle.get_latest_price(), Some(committed));
+    assert_eq!(oracle.current_round_id(), 1);
+}
+
+#[ink::test]
+fn override_bypasses_quorum_and_keeps_available_median() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice);
+    assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
+
+    submit_price(&mut oracle, accounts.bob, 10);
+
+    set_time(88);
+    set_caller(accounts.alice);
+    let committed = oracle
+        .commit_round(Some(Ratio::from_integer(25)))
+        .expect("override commit should succeed");
+
+    assert_eq!(
+        committed,
+        PriceData {
+            round_id: 0,
+            price: Ratio::from_integer(25),
+            median_price: Ratio::from_integer(10),
+            reporter_count: 1,
+            committed_at: 88,
+            was_overridden: true,
+        }
+    );
+}
+
+#[ink::test]
 fn median_is_used_for_three_submissions() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
