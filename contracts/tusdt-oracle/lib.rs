@@ -32,8 +32,12 @@ mod oracle {
 
     #[ink(storage)]
     pub struct TusdtOracle {
-        owner: AccountId,
+        controller: AccountId,
+        governance: AccountId,
+
+        validator: Option<AccountId>,
         reporters: Mapping<AccountId, bool>,
+
         current_round_id: u32,
         round_submissions: Mapping<(u32, AccountId), Ratio>,
         round_reporter_count: Mapping<u32, u32>,
@@ -68,10 +72,26 @@ mod oracle {
         was_overridden: bool,
     }
 
+    #[ink(event)]
+    pub struct OracleGovernanceUpdated {
+        #[ink(topic)]
+        previous_governance: AccountId,
+        #[ink(topic)]
+        new_governance: AccountId,
+    }
+
+    #[ink(event)]
+    pub struct ValidatorUpdated {
+        #[ink(topic)]
+        validator: Option<AccountId>,
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
-        NotOwner,
+        NotController,
+        NotGovernance,
+        NotValidator,
         NotReporter,
         InvalidPrice,
         NotEnoughSubmissions,
@@ -83,9 +103,11 @@ mod oracle {
 
     impl TusdtOracle {
         #[ink(constructor)]
-        pub fn new(owner: AccountId) -> Self {
+        pub fn new(controller: AccountId, governance: AccountId) -> Self {
             Self {
-                owner,
+                controller,
+                governance,
+                validator: None,
                 reporters: Mapping::default(),
                 current_round_id: 0,
                 round_submissions: Mapping::default(),
@@ -133,7 +155,7 @@ mod oracle {
 
         #[ink(message)]
         pub fn commit_round(&mut self, override_price: Option<Ratio>) -> Result<PriceData> {
-            self.ensure_owner()?;
+            self.ensure_validator()?;
 
             let round_id = self.current_round_id;
             let reporter_count = self.round_reporter_count.get(round_id).unwrap_or(0);
@@ -177,9 +199,29 @@ mod oracle {
 
         #[ink(message)]
         pub fn set_reporter(&mut self, reporter: AccountId, enabled: bool) -> Result<()> {
-            self.ensure_owner()?;
+            self.ensure_governance()?;
             self.reporters.insert(reporter, &enabled);
             self.env().emit_event(ReporterUpdated { reporter, enabled });
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn set_validator(&mut self, validator: Option<AccountId>) -> Result<()> {
+            self.ensure_governance()?;
+            self.validator = validator;
+            self.env().emit_event(ValidatorUpdated { validator });
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_governance(&mut self, new_governance: AccountId) -> Result<()> {
+            self.ensure_controller()?;
+            let previous_governance = self.governance;
+            self.governance = new_governance;
+            self.env().emit_event(OracleGovernanceUpdated {
+                previous_governance,
+                new_governance,
+            });
             Ok(())
         }
 
@@ -204,8 +246,18 @@ mod oracle {
         }
 
         #[ink(message)]
-        pub fn owner(&self) -> AccountId {
-            self.owner
+        pub fn controller(&self) -> AccountId {
+            self.controller
+        }
+
+        #[ink(message)]
+        pub fn governance(&self) -> AccountId {
+            self.governance
+        }
+
+        #[ink(message)]
+        pub fn validator(&self) -> Option<AccountId> {
+            self.validator
         }
 
         #[ink(message)]
@@ -213,9 +265,23 @@ mod oracle {
             self.current_round_id
         }
 
-        fn ensure_owner(&self) -> Result<()> {
-            if self.env().caller() != self.owner {
-                return Err(Error::NotOwner);
+        fn ensure_controller(&self) -> Result<()> {
+            if self.env().caller() != self.controller {
+                return Err(Error::NotController);
+            }
+            Ok(())
+        }
+
+        fn ensure_governance(&self) -> Result<()> {
+            if self.env().caller() != self.governance {
+                return Err(Error::NotGovernance);
+            }
+            Ok(())
+        }
+
+        fn ensure_validator(&self) -> Result<()> {
+            if self.validator != Some(self.env().caller()) {
+                return Err(Error::NotValidator);
             }
             Ok(())
         }

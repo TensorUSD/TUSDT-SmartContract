@@ -24,7 +24,7 @@ fn submit_price(
 fn reporter_whitelist_is_enforced() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
 
     set_caller(accounts.bob);
     assert_eq!(
@@ -37,7 +37,7 @@ fn reporter_whitelist_is_enforced() {
 fn zero_price_is_rejected() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
     assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
 
     set_caller(accounts.bob);
@@ -51,7 +51,7 @@ fn zero_price_is_rejected() {
 fn reporter_resubmission_replaces_previous_value() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
     assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.charlie, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.django, true), Ok(()));
@@ -75,14 +75,15 @@ fn reporter_resubmission_replaces_previous_value() {
 fn commit_is_blocked_below_quorum() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
     assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.charlie, true), Ok(()));
+    assert_eq!(oracle.set_validator(Some(accounts.django)), Ok(()));
 
     submit_price(&mut oracle, accounts.bob, 10);
     submit_price(&mut oracle, accounts.charlie, 20);
 
-    set_caller(accounts.alice);
+    set_caller(accounts.django);
     assert_eq!(oracle.commit_round(None), Err(Error::NotEnoughSubmissions));
 }
 
@@ -90,9 +91,11 @@ fn commit_is_blocked_below_quorum() {
 fn override_allows_commit_without_submissions() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
 
     set_time(55);
+    set_caller(accounts.bob);
     let committed = oracle
         .commit_round(Some(Ratio::from_integer(42)))
         .expect("override commit should succeed");
@@ -116,13 +119,14 @@ fn override_allows_commit_without_submissions() {
 fn override_bypasses_quorum_and_keeps_available_median() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
     assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
+    assert_eq!(oracle.set_validator(Some(accounts.charlie)), Ok(()));
 
     submit_price(&mut oracle, accounts.bob, 10);
 
     set_time(88);
-    set_caller(accounts.alice);
+    set_caller(accounts.charlie);
     let committed = oracle
         .commit_round(Some(Ratio::from_integer(25)))
         .expect("override commit should succeed");
@@ -144,17 +148,18 @@ fn override_bypasses_quorum_and_keeps_available_median() {
 fn median_is_used_for_three_submissions() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
     assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.charlie, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.django, true), Ok(()));
+    assert_eq!(oracle.set_validator(Some(accounts.eve)), Ok(()));
 
     submit_price(&mut oracle, accounts.bob, 30);
     submit_price(&mut oracle, accounts.charlie, 10);
     submit_price(&mut oracle, accounts.django, 20);
 
     set_time(77);
-    set_caller(accounts.alice);
+    set_caller(accounts.eve);
     let committed = oracle.commit_round(None).expect("commit should succeed");
     assert_eq!(
         committed,
@@ -173,7 +178,7 @@ fn median_is_used_for_three_submissions() {
 fn median_is_used_for_five_submissions() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
     for reporter in [
         accounts.bob,
         accounts.charlie,
@@ -204,17 +209,18 @@ fn median_is_used_for_five_submissions() {
 fn manual_override_is_stored_while_preserving_median_metadata() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
     assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.charlie, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.django, true), Ok(()));
+    assert_eq!(oracle.set_validator(Some(accounts.eve)), Ok(()));
 
     submit_price(&mut oracle, accounts.bob, 10);
     submit_price(&mut oracle, accounts.charlie, 20);
     submit_price(&mut oracle, accounts.django, 30);
 
     set_time(99);
-    set_caller(accounts.alice);
+    set_caller(accounts.eve);
     let committed = oracle
         .commit_round(Some(Ratio::from_integer(99)))
         .expect("override commit should succeed");
@@ -237,16 +243,17 @@ fn manual_override_is_stored_while_preserving_median_metadata() {
 fn commit_advances_the_round() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
-    let mut oracle = TusdtOracle::new(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
     assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.charlie, true), Ok(()));
     assert_eq!(oracle.set_reporter(accounts.django, true), Ok(()));
+    assert_eq!(oracle.set_validator(Some(accounts.eve)), Ok(()));
 
     submit_price(&mut oracle, accounts.bob, 10);
     submit_price(&mut oracle, accounts.charlie, 20);
     submit_price(&mut oracle, accounts.django, 30);
 
-    set_caller(accounts.alice);
+    set_caller(accounts.eve);
     oracle.commit_round(None).expect("commit should succeed");
 
     assert_eq!(oracle.current_round_id(), 1);
@@ -258,4 +265,48 @@ fn commit_advances_the_round() {
             median_price: None,
         }
     );
+}
+
+#[ink::test]
+fn governance_sets_validator_and_reporters() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.bob);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.bob);
+
+    assert_eq!(oracle.set_validator(Some(accounts.charlie)), Ok(()));
+    assert_eq!(oracle.validator(), Some(accounts.charlie));
+    assert_eq!(oracle.set_reporter(accounts.django, true), Ok(()));
+    assert!(oracle.is_reporter(accounts.django));
+
+    set_caller(accounts.eve);
+    assert_eq!(
+        oracle.set_validator(Some(accounts.eve)),
+        Err(Error::NotGovernance)
+    );
+}
+
+#[ink::test]
+fn controller_updates_oracle_governance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.bob);
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        oracle.update_governance(accounts.charlie),
+        Err(Error::NotController)
+    );
+
+    set_caller(accounts.alice);
+    assert_eq!(oracle.update_governance(accounts.charlie), Ok(()));
+    assert_eq!(oracle.governance(), accounts.charlie);
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        oracle.set_reporter(accounts.django, true),
+        Err(Error::NotGovernance)
+    );
+
+    set_caller(accounts.charlie);
+    assert_eq!(oracle.set_reporter(accounts.django, true), Ok(()));
 }

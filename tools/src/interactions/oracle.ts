@@ -55,10 +55,17 @@ export function parseBooleanFlag(value: string | undefined, fallback: boolean): 
 export async function deployOracle(
   api: ApiPromise,
   signer: KeyringPair,
-  ownerAddress = signer.address,
+  controllerAddress = signer.address,
+  governanceAddress = signer.address,
   waitFor: ExtrinsicWaitFor = "inBlock",
 ): Promise<ContractPromise> {
-  return deployOracleContract(api, signer, ownerAddress, waitFor);
+  return deployOracleContract(
+    api,
+    signer,
+    controllerAddress,
+    governanceAddress,
+    waitFor,
+  );
 }
 
 export function getOracleContract(api: ApiPromise, address: string): ContractPromise {
@@ -74,6 +81,15 @@ export async function setReporter(
   enabled: boolean,
 ) {
   return txMessage(api, oracle, "set_reporter", signer, [reporter, enabled]);
+}
+
+export async function setValidator(
+  api: ApiPromise,
+  oracle: ContractPromise,
+  signer: KeyringPair,
+  validator: string | null,
+) {
+  return txMessage(api, oracle, "set_validator", signer, [validator]);
 }
 
 export async function submitPrice(
@@ -116,11 +132,11 @@ export async function dryRunCommitRound(
   return queryMessage(oracle, "commit_round", callerAddress, [overrideArg]);
 }
 
-export async function queryOwner(
+export async function queryGovernance(
   oracle: ContractPromise,
   callerAddress: string,
 ): Promise<string> {
-  const result = await queryMessage(oracle, "owner", callerAddress);
+  const result = await queryMessage(oracle, "governance", callerAddress);
   if (!result.decoded.ok) {
     throw new Error(formatInkError(result.decoded.error));
   }

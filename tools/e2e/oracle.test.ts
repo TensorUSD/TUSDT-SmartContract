@@ -16,9 +16,10 @@ import {
   dryRunCommitRound,
   dryRunSubmitPrice,
   getOracleContract,
+  queryGovernance,
   queryIsReporter,
-  queryOwner,
   setReporter,
+  setValidator,
   submitPrice,
 } from "../src/interactions/oracle.js";
 
@@ -39,13 +40,13 @@ const ORACLE_CONTRACT_ADDRESS = getOptionalEnv("ORACLE_CONTRACT_ADDRESS");
 
 describe.sequential("tusdt-oracle on-chain flow", () => {
   let api: ApiPromise;
-  let owner: KeyringPair;
+  let governance: KeyringPair;
   let reporters: [KeyringPair, KeyringPair, KeyringPair];
   let oracle: Awaited<ReturnType<typeof deployOracle>>;
 
   beforeAll(async () => {
     api = await createApi();
-    owner = await getAccountFromSuri(ORACLE_CONTRACT_OWNER_SURI);
+    governance = await getAccountFromSuri(ORACLE_CONTRACT_OWNER_SURI);
     reporters = [
       await getAccountFromSuri(ORACLE_REPORTER_1_SURI),
       await getAccountFromSuri(ORACLE_REPORTER_2_SURI),
@@ -59,7 +60,12 @@ describe.sequential("tusdt-oracle on-chain flow", () => {
       );
       oracle = getOracleContract(api, ORACLE_CONTRACT_ADDRESS);
     } else {
-      oracle = await deployOracle(api, owner, owner.address);
+      oracle = await deployOracle(
+        api,
+        governance,
+        governance.address,
+        governance.address,
+      );
     }
     console.log("Oracle Address: ", oracle.address.toHuman());
   });
@@ -68,22 +74,22 @@ describe.sequential("tusdt-oracle on-chain flow", () => {
     await api.disconnect();
   });
 
-  it("deploys with the configured owner", async () => {
-    await expect(queryOwner(oracle, owner.address)).resolves.toBe(
-      owner.address,
+  it("deploys with the configured governance", async () => {
+    await expect(queryGovernance(oracle, governance.address)).resolves.toBe(
+      governance.address,
     );
   });
 
-  it("lets the owner manage reporter status", async () => {
-    await setReporter(api, oracle, owner, reporters[0].address, true);
+  it("lets governance manage reporter status", async () => {
+    await setReporter(api, oracle, governance, reporters[0].address, true);
 
     await expect(
-      queryIsReporter(oracle, owner.address, reporters[0].address),
+      queryIsReporter(oracle, governance.address, reporters[0].address),
     ).resolves.toBe(true);
   });
 
   it("rejects non-reporters during submit_price dry runs", async () => {
-    const result = await dryRunSubmitPrice(oracle, owner.address, 10);
+    const result = await dryRunSubmitPrice(oracle, governance.address, 10);
 
     expect(result.decoded.ok).toBe(false);
     expect(formatInkError(result.decoded.error)).toContain("NotReporter");
@@ -97,12 +103,13 @@ describe.sequential("tusdt-oracle on-chain flow", () => {
   });
 
   it("blocks round commit below quorum", async () => {
-    await setReporter(api, oracle, owner, reporters[1].address, true);
+    await setReporter(api, oracle, governance, reporters[1].address, true);
+    await setValidator(api, oracle, governance, governance.address);
 
     await submitPrice(api, oracle, reporters[0], 10);
     await submitPrice(api, oracle, reporters[1], 20);
 
-    const result = await dryRunCommitRound(oracle, owner.address);
+    const result = await dryRunCommitRound(oracle, governance.address);
 
     expect(result.decoded.ok).toBe(false);
     expect(formatInkError(result.decoded.error)).toContain(

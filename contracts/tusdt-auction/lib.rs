@@ -55,8 +55,9 @@ mod auction {
 
     #[ink(storage)]
     pub struct TusdtAuction {
-        owner: AccountId,
-        admin: AccountId,
+        controller: AccountId,
+        governance: AccountId,
+        admin: Option<AccountId>,
         token: TusdtErc20Ref,
 
         auction_count: u32,
@@ -111,10 +112,25 @@ mod auction {
         amount: Balance,
     }
 
+    #[ink(event)]
+    pub struct AuctionGovernanceUpdated {
+        #[ink(topic)]
+        previous_governance: AccountId,
+        #[ink(topic)]
+        new_governance: AccountId,
+    }
+
+    #[ink(event)]
+    pub struct AdminUpdated {
+        #[ink(topic)]
+        admin: Option<AccountId>,
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
-        NotOwner,
+        NotController,
+        NotGovernance,
         NotAdmin,
         AuctionNotFound,
         BidNotFound,
@@ -143,13 +159,18 @@ mod auction {
     }
 
     impl TusdtAuction {
-        /// Initializes the auction contract with owner, admin, and token contract reference.
+        /// Initializes the auction contract with controller, governance, and token contract reference.
         #[ink(constructor)]
-        pub fn new(owner: AccountId, admin: AccountId, token_address: AccountId) -> Self {
+        pub fn new(
+            controller: AccountId,
+            governance: AccountId,
+            token_address: AccountId,
+        ) -> Self {
             let token = TusdtErc20Ref::from_account_id(token_address);
             Self {
-                owner,
-                admin,
+                controller,
+                governance,
+                admin: None,
                 token,
 
                 auction_count: 0,
@@ -174,7 +195,7 @@ mod auction {
             debt_balance: Balance,
             duration_ms: Option<u64>,
         ) -> Result<u32> {
-            self.ensure_owner()?;
+            self.ensure_controller()?;
 
             if self
                 .active_vault_auction
@@ -234,6 +255,26 @@ mod auction {
             });
 
             Ok(auction_id)
+        }
+
+        #[ink(message)]
+        pub fn set_admin(&mut self, admin: Option<AccountId>) -> Result<()> {
+            self.ensure_governance()?;
+            self.admin = admin;
+            self.env().emit_event(AdminUpdated { admin });
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_governance(&mut self, new_governance: AccountId) -> Result<()> {
+            self.ensure_controller()?;
+            let previous_governance = self.governance;
+            self.governance = new_governance;
+            self.env().emit_event(AuctionGovernanceUpdated {
+                previous_governance,
+                new_governance,
+            });
+            Ok(())
         }
 
         /// Places a bid on an auction, transferring the bid amount and updating the highest bid if applicable.
@@ -557,9 +598,17 @@ mod auction {
         }
 
         #[inline]
-        fn ensure_owner(&self) -> Result<()> {
-            if self.env().caller() != self.owner {
-                return Err(Error::NotOwner);
+        fn ensure_controller(&self) -> Result<()> {
+            if self.env().caller() != self.controller {
+                return Err(Error::NotController);
+            }
+            Ok(())
+        }
+
+        #[inline]
+        fn ensure_governance(&self) -> Result<()> {
+            if self.env().caller() != self.governance {
+                return Err(Error::NotGovernance);
             }
             Ok(())
         }
@@ -583,22 +632,28 @@ mod auction {
                 return Err(Error::AuctionEnded);
             }
             // If the auction ends and no bid, only admin can place the bid.
-            if bidder != self.admin {
+            if self.admin != Some(bidder) {
                 return Err(Error::NotAdmin);
             }
 
             Ok(())
         }
 
-        /// Returns the owner account ID.
+        /// Returns the controller account ID.
         #[ink(message)]
-        pub fn owner(&self) -> AccountId {
-            self.owner
+        pub fn controller(&self) -> AccountId {
+            self.controller
+        }
+
+        /// Returns the governance account ID.
+        #[ink(message)]
+        pub fn governance(&self) -> AccountId {
+            self.governance
         }
 
         /// Returns the admin account ID.
         #[ink(message)]
-        pub fn admin(&self) -> AccountId {
+        pub fn admin(&self) -> Option<AccountId> {
             self.admin
         }
     }

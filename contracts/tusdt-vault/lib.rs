@@ -65,7 +65,7 @@ mod vault {
 
     #[ink(storage)]
     pub struct TusdtVault {
-        owner: AccountId,
+        governance: AccountId,
 
         // Token address of tusdt.
         token: TusdtErc20Ref,
@@ -134,6 +134,14 @@ mod vault {
     }
 
     #[ink(event)]
+    pub struct VaultGovernanceUpdated {
+        #[ink(topic)]
+        previous_governance: AccountId,
+        #[ink(topic)]
+        new_governance: AccountId,
+    }
+
+    #[ink(event)]
     pub struct LiquidationAuctionCreated {
         #[ink(topic)]
         owner: AccountId,
@@ -177,7 +185,7 @@ mod vault {
         AuctionNotFound,
         AuctionNotFinalized,
         ArithmeticError,
-        NotContractOwner,
+        NotGovernance,
         OracleCallFailed,
         OraclePriceUnavailable,
         OraclePriceStale,
@@ -194,7 +202,7 @@ mod vault {
             auction_code_hash: Hash,
             oracle_code_hash: Hash,
         ) -> Self {
-            let owner = Self::env().caller();
+            let governance = Self::env().caller();
 
             let contract_account = Self::env().account_id();
             let token = TusdtErc20Ref::new(contract_account)
@@ -202,12 +210,13 @@ mod vault {
                 .endowment(0)
                 .salt_bytes([0; 32])
                 .instantiate();
-            let auction = TusdtAuctionRef::new(contract_account, owner, token.to_account_id())
+            let auction =
+                TusdtAuctionRef::new(contract_account, governance, token.to_account_id())
                 .code_hash(auction_code_hash)
                 .endowment(0)
                 .salt_bytes([1; 32])
                 .instantiate();
-            let oracle = TusdtOracleRef::new(owner)
+            let oracle = TusdtOracleRef::new(contract_account, governance)
                 .code_hash(oracle_code_hash)
                 .endowment(0)
                 .salt_bytes([2; 32])
@@ -216,7 +225,7 @@ mod vault {
             let params = Self::default_contract_params();
 
             Self {
-                owner,
+                governance,
                 token,
                 auction,
                 oracle,
@@ -229,17 +238,32 @@ mod vault {
             }
         }
 
-        /// Updates contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) with validation; only callable by owner.
+        /// Updates contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) with validation; only callable by governance.
         #[ink(message)]
         pub fn set_contract_params(&mut self, params: VaultContractParamsPercentage) -> Result<()> {
-            if self.env().caller() != self.owner {
-                return Err(Error::NotContractOwner);
-            }
+            self.ensure_governance()?;
 
             let validated = Self::contract_params_from_percentages(params)?;
             self.params = validated;
 
             self.env().emit_event(ContractParamsUpdated { params });
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn update_governance(&mut self, new_governance: AccountId) -> Result<()> {
+            self.ensure_governance()?;
+
+            self.sync_child_governance(new_governance)?;
+
+            let previous_governance = self.governance;
+            self.governance = new_governance;
+
+            self.env().emit_event(VaultGovernanceUpdated {
+                previous_governance,
+                new_governance,
+            });
 
             Ok(())
         }
@@ -552,6 +576,12 @@ mod vault {
             self.oracle.to_account_id()
         }
 
+        /// Returns the current governance account.
+        #[ink(message)]
+        pub fn governance(&self) -> AccountId {
+            self.governance
+        }
+
         /// Returns the current contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) as percentages.
         #[ink(message)]
         pub fn get_contract_params(&self) -> VaultContractParamsPercentage {
@@ -687,17 +717,41 @@ mod vault {
             )?;
             Ok(price_data.price)
         }
+
+        #[inline]
+        fn ensure_governance(&self) -> Result<()> {
+            if self.env().caller() != self.governance {
+                return Err(Error::NotGovernance);
+            }
+            Ok(())
+        }
+
+        #[cfg(not(test))]
+        fn sync_child_governance(&mut self, new_governance: AccountId) -> Result<()> {
+            self.auction
+                .update_governance(new_governance)
+                .map_err(|_| Error::AuctionContractCallFailed)?;
+            self.oracle
+                .update_governance(new_governance)
+                .map_err(|_| Error::OracleCallFailed)?;
+            Ok(())
+        }
+
+        #[cfg(test)]
+        fn sync_child_governance(&mut self, _new_governance: AccountId) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[cfg(test)]
     impl TusdtVault {
-        pub(crate) fn new_for_test(owner: AccountId) -> Self {
+        pub(crate) fn new_for_test(governance: AccountId) -> Self {
             use ink::env::call::FromAccountId;
 
             let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
 
             Self {
-                owner,
+                governance,
                 token: TusdtErc20Ref::from_account_id(accounts.charlie),
                 auction: TusdtAuctionRef::from_account_id(accounts.django),
                 oracle: TusdtOracleRef::from_account_id(accounts.eve),

@@ -8,7 +8,7 @@ mod tusdt {
 
     #[ink(storage)]
     pub struct TusdtErc20 {
-        owner: AccountId,
+        controller: AccountId,
         total_supply: Balance,
         balances: Mapping<AccountId, Balance>,
         allowances: Mapping<(AccountId, AccountId), Balance>,
@@ -37,27 +37,27 @@ mod tusdt {
     pub enum Error {
         InsufficientBalance,
         InsufficientAllowance,
-        NotOwner,
+        NotController,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
 
     impl TusdtErc20 {
-        /// Initializes the token contract with the specified owner account.
+        /// Initializes the token contract with the specified controller account.
         #[ink(constructor)]
-        pub fn new(owner: AccountId) -> Self {
+        pub fn new(controller: AccountId) -> Self {
             Self {
-                owner,
+                controller,
                 total_supply: 0,
                 balances: Mapping::default(),
                 allowances: Default::default(),
             }
         }
 
-        /// Returns the owner account ID.
+        /// Returns the controller account ID.
         #[ink(message)]
-        pub fn owner(&self) -> AccountId {
-            self.owner
+        pub fn controller(&self) -> AccountId {
+            self.controller
         }
 
         /// Returns the total supply of tokens in circulation.
@@ -89,9 +89,9 @@ mod tusdt {
         }
 
         #[inline]
-        fn ensure_owner(&self) -> Result<()> {
-            if self.env().caller() != self.owner {
-                return Err(Error::NotOwner);
+        fn ensure_controller(&self) -> Result<()> {
+            if self.env().caller() != self.controller {
+                return Err(Error::NotController);
             }
             Ok(())
         }
@@ -103,10 +103,10 @@ mod tusdt {
             self.transfer_from_to(&from, &to, value)
         }
 
-        /// Mints new tokens and adds them to an account's balance; only callable by owner.
+        /// Mints new tokens and adds them to an account's balance; only callable by controller.
         #[ink(message)]
         pub fn mint(&mut self, to: AccountId, value: Balance) -> Result<()> {
-            self.ensure_owner()?;
+            self.ensure_controller()?;
             let to_balance = self.balance_of_impl(&to);
 
             self.total_supply = self
@@ -128,10 +128,10 @@ mod tusdt {
             Ok(())
         }
 
-        /// Burns tokens from an account, reducing the total supply; only callable by owner.
+        /// Burns tokens from an account, reducing the total supply; only callable by controller.
         #[ink(message)]
         pub fn burn(&mut self, from: AccountId, value: Balance) -> Result<()> {
-            self.ensure_owner()?;
+            self.ensure_controller()?;
             let from_balance = self.balance_of_impl(&from);
             if from_balance < value {
                 return Err(Error::InsufficientBalance);

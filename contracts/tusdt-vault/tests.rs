@@ -118,7 +118,7 @@ fn release_collateral_checks_balance_before_oracle_path() {
 }
 
 #[ink::test]
-fn set_contract_params_enforces_owner_and_validation() {
+fn set_contract_params_enforces_governance_and_validation() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
@@ -134,7 +134,7 @@ fn set_contract_params_enforces_owner_and_validation() {
     set_caller(accounts.bob);
     assert_eq!(
         vault.set_contract_params(valid),
-        Err(Error::NotContractOwner)
+        Err(Error::NotGovernance)
     );
 
     set_caller(accounts.alice);
@@ -180,6 +180,36 @@ fn set_contract_params_enforces_owner_and_validation() {
     assert_eq!(params.liquidation_fee, 2);
     assert_eq!(params.auction_duration_ms, 120_000);
     assert_eq!(params.max_oracle_age_ms, 600_000);
+}
+
+#[ink::test]
+fn governance_can_be_updated_by_current_governance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+    let valid = VaultContractParamsPercentage {
+        collateral_ratio: 200,
+        liquidation_ratio: 130,
+        interest_rate: 7,
+        liquidation_fee: 2,
+        auction_duration_ms: 120_000,
+        max_oracle_age_ms: 600_000,
+    };
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        vault.update_governance(accounts.bob),
+        Err(Error::NotGovernance)
+    );
+
+    set_caller(accounts.alice);
+    assert_eq!(vault.governance(), accounts.alice);
+    assert_eq!(vault.update_governance(accounts.bob), Ok(()));
+    assert_eq!(vault.governance(), accounts.bob);
+
+    assert_eq!(vault.set_contract_params(valid), Err(Error::NotGovernance));
+
+    set_caller(accounts.bob);
+    assert_eq!(vault.set_contract_params(valid), Ok(()));
 }
 
 #[ink::test]

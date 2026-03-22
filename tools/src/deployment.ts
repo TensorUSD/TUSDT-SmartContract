@@ -95,8 +95,8 @@ export async function deployAuction(
   api: ApiPromise,
   signer: KeyringPair,
   tokenAddress: string,
-  ownerAddress = signer.address,
-  adminAddress = signer.address,
+  controllerAddress = signer.address,
+  governanceAddress = signer.address,
   waitFor: ExtrinsicWaitFor = "inBlock",
 ): Promise<ContractPromise> {
   const artifact = loadContractArtifact("auction");
@@ -106,7 +106,7 @@ export async function deployAuction(
     artifact.abi,
     artifact.wasm,
     "new",
-    [ownerAddress, adminAddress, tokenAddress],
+    [controllerAddress, governanceAddress, tokenAddress],
     waitFor,
   );
 
@@ -116,7 +116,8 @@ export async function deployAuction(
 export async function deployOracle(
   api: ApiPromise,
   signer: KeyringPair,
-  ownerAddress = signer.address,
+  controllerAddress = signer.address,
+  governanceAddress = signer.address,
   waitFor: ExtrinsicWaitFor = "inBlock",
 ): Promise<ContractPromise> {
   const artifact = loadContractArtifact("oracle");
@@ -126,7 +127,7 @@ export async function deployOracle(
     artifact.abi,
     artifact.wasm,
     "new",
-    [ownerAddress],
+    [controllerAddress, governanceAddress],
     waitFor,
   );
 

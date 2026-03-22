@@ -30,8 +30,9 @@ fn new_works() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
-    assert_eq!(auction.owner(), accounts.alice);
-    assert_eq!(auction.admin(), accounts.bob);
+    assert_eq!(auction.controller(), accounts.alice);
+    assert_eq!(auction.governance(), accounts.bob);
+    assert_eq!(auction.admin(), None);
     assert_eq!(auction.get_total_auctions_count(), 0);
     assert_eq!(auction.get_active_auctions_count(), 0);
 }
@@ -66,14 +67,14 @@ fn create_auction_works() {
 }
 
 #[ink::test]
-fn create_auction_fails_for_non_owner() {
+fn create_auction_fails_for_non_controller() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     set_caller(accounts.bob);
     assert_eq!(
         auction.create_auction(accounts.bob, 1, 1_000, 400, Some(1_000)),
-        Err(Error::NotOwner)
+        Err(Error::NotController)
     );
     assert_eq!(auction.get_total_auctions_count(), 0);
     assert_eq!(auction.get_active_auctions_count(), 0);
@@ -130,6 +131,9 @@ fn place_bid_fails_for_non_admin_after_auction_end_without_bids() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_time(100);
     let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+    set_caller(accounts.bob);
+    assert_eq!(auction.set_admin(Some(accounts.bob)), Ok(()));
+    set_caller(accounts.alice);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 2);
     set_time(1_100);
@@ -167,7 +171,9 @@ fn finalize_auction_fails_without_bids_after_end() {
 #[ink::test]
 fn late_bid_is_allowed_only_for_admin_when_no_bids_exist() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
-    let auction_contract = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+    let mut auction_contract = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+    set_caller(accounts.bob);
+    assert_eq!(auction_contract.set_admin(Some(accounts.bob)), Ok(()));
     let auction = Auction {
         id: 0,
         vault_owner: accounts.bob,
@@ -232,6 +238,42 @@ fn finalize_auction_fails_before_end() {
         auction.finalize_auction(auction_id),
         Err(Error::AuctionNotEnded)
     );
+}
+
+#[ink::test]
+fn governance_sets_admin() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+
+    set_caller(accounts.django);
+    assert_eq!(auction.set_admin(Some(accounts.eve)), Err(Error::NotGovernance));
+
+    set_caller(accounts.bob);
+    assert_eq!(auction.set_admin(Some(accounts.eve)), Ok(()));
+    assert_eq!(auction.admin(), Some(accounts.eve));
+}
+
+#[ink::test]
+fn controller_updates_auction_governance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        auction.update_governance(accounts.django),
+        Err(Error::NotController)
+    );
+
+    set_caller(accounts.alice);
+    assert_eq!(auction.update_governance(accounts.django), Ok(()));
+    assert_eq!(auction.governance(), accounts.django);
+
+    set_caller(accounts.bob);
+    assert_eq!(auction.set_admin(Some(accounts.eve)), Err(Error::NotGovernance));
+
+    set_caller(accounts.django);
+    assert_eq!(auction.set_admin(Some(accounts.eve)), Ok(()));
+    assert_eq!(auction.admin(), Some(accounts.eve));
 }
 
 #[ink::test]
