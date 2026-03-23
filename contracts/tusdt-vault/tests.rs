@@ -335,6 +335,38 @@ fn interest_accrues_after_full_hours_only() {
 }
 
 #[ink::test]
+fn interest_uses_hourly_discrete_compounding() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
+    let mut vault = Vault {
+        id: 0,
+        owner: accounts.alice,
+        collateral_balance: 1_000,
+        borrowed_token_balance: 100_000,
+        created_at: 0,
+        last_interest_accrued_at: 0,
+    };
+
+    set_caller(accounts.alice);
+    assert_eq!(
+        vault_contract.set_contract_params(VaultContractParamsPercentage {
+            collateral_ratio: 200,
+            liquidation_ratio: 130,
+            interest_rate: 10,
+            liquidation_fee: 2,
+            auction_duration_ms: 120_000,
+            max_oracle_age_ms: 600_000,
+        }),
+        Ok(())
+    );
+
+    set_time(30 * 24 * MILLISECONDS_PER_HOUR);
+    assert_eq!(vault_contract.accrue_interest(&mut vault), Ok(()));
+    assert_eq!(vault.borrowed_token_balance, 100_825);
+    assert_eq!(vault.last_interest_accrued_at, 30 * 24 * MILLISECONDS_PER_HOUR);
+}
+
+#[ink::test]
 fn liquidatable_check_uses_liquidation_ratio_limit() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let vault_contract = TusdtVault::new_for_test(accounts.alice);

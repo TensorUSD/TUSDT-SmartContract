@@ -23,13 +23,18 @@ impl TusdtVault {
             return Ok(());
         }
 
-        let hourly_exponent = self
+        let hourly_rate = self
             .params
             .interest_rate
             .checked_div_int(HOURS_PER_YEAR)
             .ok_or(Error::ArithmeticError)?;
 
-        let hourly_growth_factor = hourly_exponent.exp().ok_or(Error::ArithmeticError)?;
+        let hourly_growth_factor = Ratio::from_inner(
+            Ratio::one()
+                .into_inner()
+                .checked_add(hourly_rate.into_inner())
+                .ok_or(Error::ArithmeticError)?,
+        );
         let compounded_growth_factor = hourly_growth_factor
             .checked_pow(borrowed_hours)
             .ok_or(Error::ArithmeticError)?;
