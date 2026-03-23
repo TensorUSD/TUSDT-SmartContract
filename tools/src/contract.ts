@@ -451,9 +451,23 @@ export async function instantiateContract(
     waitFor,
   );
 
-  const instantiated = submitted.events.find(({ event }) =>
+  const address = findInstantiatedContractAddress(api, submitted.events);
+
+  return {
+    address,
+    blockHash: submitted.blockHash,
+    events: submitted.events,
+  };
+}
+
+export function findInstantiatedContractAddress(
+  api: Pick<ApiPromise, "events">,
+  events: SubmittableResult["events"],
+): string {
+  const instantiatedEvents = events.filter(({ event }) =>
     api.events.contracts.Instantiated.is(event),
   );
+  const instantiated = instantiatedEvents.at(-1);
 
   if (!instantiated) {
     throw new Error(
@@ -461,11 +475,5 @@ export async function instantiateContract(
     );
   }
 
-  const address = instantiated.event.data[1].toString();
-
-  return {
-    address,
-    blockHash: submitted.blockHash,
-    events: submitted.events,
-  };
+  return instantiated.event.data[1].toString();
 }
