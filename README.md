@@ -157,7 +157,7 @@ Default params:
 
 ## Useful Read Methods
 
-- Vault: `get_vault`, `get_contract_params`, `get_oracle_address`, `get_vaults`, `get_all_vaults`
+- Vault: `get_vault`, `get_total_debt`, `get_contract_params`, `get_oracle_address`, `get_vaults`, `get_all_vaults`
 - Oracle: `get_latest_price`, `get_current_round_summary`, `is_reporter`
 - Auction: `get_auction`, `get_active_vault_auction`, `get_bid`, `get_all_auctions`, `get_active_auctions`
 - Token: `balance_of`, `allowance`, `total_supply`

@@ -51,6 +51,8 @@ fn create_vault_tracks_ids_balances_and_counts() {
     assert_eq!(vault.get_vaults_count(accounts.bob), 1);
     assert_eq!(vault.get_total_vaults_count(), 3);
     assert_eq!(vault.get_total_collateral_balance(), 1_500);
+    assert_eq!(vault.get_total_debt(accounts.alice), 0);
+    assert_eq!(vault.get_total_debt(accounts.bob), 0);
 
     let alice_v0 = vault
         .get_vault(accounts.alice, 0)
@@ -379,7 +381,10 @@ fn accrue_interest_message_updates_stored_vault_balance() {
         .expect("vault should exist");
     stored_vault.borrowed_token_balance = 100_000;
     stored_vault.last_interest_accrued_at = 0;
-    vault_contract.save_vault(accounts.alice, vault_id, &stored_vault);
+    assert_eq!(
+        vault_contract.save_vault(accounts.alice, vault_id, &stored_vault),
+        Ok(())
+    );
 
     set_time(30 * 24 * MILLISECONDS_PER_HOUR);
     assert_eq!(
@@ -391,6 +396,7 @@ fn accrue_interest_message_updates_stored_vault_balance() {
         .get_vault(accounts.alice, vault_id)
         .expect("vault should still exist");
     assert_eq!(updated_vault.borrowed_token_balance, 100_411);
+    assert_eq!(vault_contract.get_total_debt(accounts.alice), 100_411);
     assert_eq!(
         updated_vault.last_interest_accrued_at,
         30 * 24 * MILLISECONDS_PER_HOUR
@@ -406,6 +412,55 @@ fn accrue_interest_message_rejects_missing_vault() {
         vault_contract.accrue_interest(accounts.alice, 0),
         Err(Error::VaultNotFound)
     );
+}
+
+#[ink::test]
+fn total_debt_tracks_sum_of_owner_vault_debts() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
+
+    let alice_vault_0 = create_vault_with_collateral(&mut vault_contract, accounts.alice, 400);
+    let alice_vault_1 = create_vault_with_collateral(&mut vault_contract, accounts.alice, 500);
+    let bob_vault_0 = create_vault_with_collateral(&mut vault_contract, accounts.bob, 300);
+
+    let mut alice_first = vault_contract
+        .get_vault(accounts.alice, alice_vault_0)
+        .expect("alice vault 0 should exist");
+    alice_first.borrowed_token_balance = 125;
+    assert_eq!(
+        vault_contract.save_vault(accounts.alice, alice_vault_0, &alice_first),
+        Ok(())
+    );
+
+    let mut alice_second = vault_contract
+        .get_vault(accounts.alice, alice_vault_1)
+        .expect("alice vault 1 should exist");
+    alice_second.borrowed_token_balance = 275;
+    assert_eq!(
+        vault_contract.save_vault(accounts.alice, alice_vault_1, &alice_second),
+        Ok(())
+    );
+
+    let mut bob_first = vault_contract
+        .get_vault(accounts.bob, bob_vault_0)
+        .expect("bob vault 0 should exist");
+    bob_first.borrowed_token_balance = 80;
+    assert_eq!(
+        vault_contract.save_vault(accounts.bob, bob_vault_0, &bob_first),
+        Ok(())
+    );
+
+    assert_eq!(vault_contract.get_total_debt(accounts.alice), 400);
+    assert_eq!(vault_contract.get_total_debt(accounts.bob), 80);
+
+    alice_first.borrowed_token_balance = 160;
+    assert_eq!(
+        vault_contract.save_vault(accounts.alice, alice_vault_0, &alice_first),
+        Ok(())
+    );
+
+    assert_eq!(vault_contract.get_total_debt(accounts.alice), 435);
+    assert_eq!(vault_contract.get_total_debt(accounts.bob), 80);
 }
 
 #[ink::test]

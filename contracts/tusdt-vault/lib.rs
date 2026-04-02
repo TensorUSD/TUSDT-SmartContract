@@ -78,6 +78,7 @@ mod vault {
         params: VaultContractParams,
 
         vaults: Mapping<(AccountId, u32), Vault>,
+        owner_total_debt: Mapping<AccountId, Balance>,
         vault_count: Mapping<AccountId, u32>,
         vault_keys: StorageVec<(AccountId, u32)>,
         liquidation_auctions: Mapping<(AccountId, u32), u32>,
@@ -243,6 +244,7 @@ mod vault {
                 total_collateral_balance: 0,
                 params,
                 vaults: Mapping::default(),
+                owner_total_debt: Mapping::default(),
                 vault_count: Mapping::default(),
                 vault_keys: StorageVec::default(),
                 liquidation_auctions: Mapping::default(),
@@ -296,7 +298,7 @@ mod vault {
                 last_interest_accrued_at: timestamp,
             };
 
-            self.vaults.insert((caller, vault_id), &vault);
+            self.save_vault(caller, vault_id, &vault)?;
             self.vault_keys.push(&(caller, vault_id));
             self.total_collateral_balance = self
                 .total_collateral_balance
@@ -329,7 +331,7 @@ mod vault {
                 .total_collateral_balance
                 .checked_add(amount)
                 .ok_or(Error::ArithmeticError)?;
-            self.save_vault(caller, vault_id, &vault);
+            self.save_vault(caller, vault_id, &vault)?;
 
             self.env().emit_event(CollateralAdded {
                 owner: caller,
@@ -363,7 +365,7 @@ mod vault {
 
             vault.borrowed_token_balance = projected_borrowed;
             self.touch_last_interest_accrued_at(&mut vault);
-            self.save_vault(caller, vault_id, &vault);
+            self.save_vault(caller, vault_id, &vault)?;
 
             self.env().emit_event(TokensBorrowed {
                 owner: caller,
@@ -392,7 +394,7 @@ mod vault {
                 .borrowed_token_balance
                 .checked_sub(amount)
                 .ok_or(Error::ArithmeticError)?;
-            self.save_vault(caller, vault_id, &vault);
+            self.save_vault(caller, vault_id, &vault)?;
 
             self.env().emit_event(TokensRepaid {
                 owner: caller,
@@ -415,7 +417,7 @@ mod vault {
             let borrowed_balance = vault.borrowed_token_balance;
             let accrued_at = vault.last_interest_accrued_at;
 
-            self.save_vault(owner, vault_id, &vault);
+            self.save_vault(owner, vault_id, &vault)?;
             self.env().emit_event(InterestAccrued {
                 owner,
                 vault_id,
@@ -459,7 +461,7 @@ mod vault {
                 .checked_sub(amount)
                 .ok_or(Error::ArithmeticError)?;
             vault.collateral_balance = projected_collateral;
-            self.save_vault(caller, vault_id, &vault);
+            self.save_vault(caller, vault_id, &vault)?;
 
             self.env().emit_event(CollateralReleased {
                 owner: caller,
@@ -512,7 +514,7 @@ mod vault {
                 )
                 .map_err(|_| Error::AuctionContractCallFailed)?;
 
-            self.save_vault(owner, vault_id, &vault);
+            self.save_vault(owner, vault_id, &vault)?;
             self.liquidation_auctions
                 .insert((owner, vault_id), &auction_id);
 
@@ -571,7 +573,7 @@ mod vault {
                 vault.borrowed_token_balance = 0;
             }
 
-            self.save_vault(owner, vault_id, &vault);
+            self.save_vault(owner, vault_id, &vault)?;
             self.liquidation_auctions.remove((owner, vault_id));
 
             self.env().emit_event(VaultLiquidated {
@@ -639,6 +641,12 @@ mod vault {
         #[ink(message)]
         pub fn get_total_collateral_balance(&self) -> Balance {
             self.total_collateral_balance
+        }
+
+        /// Returns the total borrowed debt across all vaults owned by an account.
+        #[ink(message)]
+        pub fn get_total_debt(&self, owner: AccountId) -> Balance {
+            self.owner_total_debt.get(owner).unwrap_or_default()
         }
 
         /// Calculates the token value of a vault's collateral based on the current price ratio.
@@ -753,6 +761,22 @@ mod vault {
             Ok(price_data.price)
         }
 
+        pub(crate) fn sync_owner_total_debt(
+            &mut self,
+            owner: AccountId,
+            previous_vault_debt: Balance,
+            next_vault_debt: Balance,
+        ) -> Result<()> {
+            let owner_total_debt = self.owner_total_debt.get(owner).unwrap_or_default();
+            let owner_total_debt = owner_total_debt
+                .checked_sub(previous_vault_debt)
+                .ok_or(Error::ArithmeticError)?
+                .checked_add(next_vault_debt)
+                .ok_or(Error::ArithmeticError)?;
+            self.owner_total_debt.insert(owner, &owner_total_debt);
+            Ok(())
+        }
+
         #[inline]
         fn ensure_governance(&self) -> Result<()> {
             if self.env().caller() != self.governance {
@@ -793,6 +817,7 @@ mod vault {
                 total_collateral_balance: 0,
                 params: Self::default_contract_params(),
                 vaults: Mapping::default(),
+                owner_total_debt: Mapping::default(),
                 vault_count: Mapping::default(),
                 vault_keys: StorageVec::default(),
                 liquidation_auctions: Mapping::default(),
