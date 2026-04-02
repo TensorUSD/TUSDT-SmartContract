@@ -310,3 +310,58 @@ fn controller_updates_oracle_governance() {
     set_caller(accounts.charlie);
     assert_eq!(oracle.set_reporter(accounts.django, true), Ok(()));
 }
+
+#[ink::test]
+fn committed_round_history_is_queryable() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
+
+    set_caller(accounts.bob);
+    set_time(10);
+    let round_0 = oracle
+        .commit_round(Some(Ratio::from_integer(11)))
+        .expect("first override commit should succeed");
+
+    set_time(20);
+    let round_1 = oracle
+        .commit_round(Some(Ratio::from_integer(22)))
+        .expect("second override commit should succeed");
+
+    assert_eq!(oracle.get_round_price(0), Some(round_0));
+    assert_eq!(oracle.get_round_price(1), Some(round_1));
+    assert_eq!(oracle.get_price_history_count(), 2);
+    assert_eq!(oracle.get_price_history(0), vec![round_1, round_0]);
+    assert_eq!(oracle.get_price_history(1), Vec::<PriceData>::new());
+}
+
+#[ink::test]
+fn committed_round_history_supports_pagination() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
+
+    set_caller(accounts.bob);
+    for round_id in 0..12_u32 {
+        set_time(round_id as u64);
+        oracle
+            .commit_round(Some(Ratio::from_integer(round_id as u128 + 1)))
+            .expect("override commit should succeed");
+    }
+
+    assert_eq!(oracle.get_price_history_count(), 12);
+
+    let page_0 = oracle.get_price_history(0);
+    assert_eq!(page_0.len(), 10);
+    assert_eq!(page_0[0].round_id, 11);
+    assert_eq!(page_0[9].round_id, 2);
+
+    let page_1 = oracle.get_price_history(1);
+    assert_eq!(page_1.len(), 2);
+    assert_eq!(page_1[0].round_id, 1);
+    assert_eq!(page_1[1].round_id, 0);
+
+    assert!(oracle.get_price_history(2).is_empty());
+}

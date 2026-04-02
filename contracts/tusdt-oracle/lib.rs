@@ -4,10 +4,12 @@ pub use self::oracle::{PriceData, RoundSummary, TusdtOracle, TusdtOracleRef};
 
 #[ink::contract(env = tusdt_env::CustomEnvironment)]
 mod oracle {
+    use core::cmp::min;
     use ink::{prelude::vec::Vec, storage::Mapping};
     use tusdt_primitives::Ratio;
 
     const MIN_REPORTERS: u32 = 3;
+    const PAGE_SIZE: u32 = 10;
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
@@ -42,6 +44,7 @@ mod oracle {
         round_submissions: Mapping<(u32, AccountId), Ratio>,
         round_reporter_count: Mapping<u32, u32>,
         round_reporters: Mapping<(u32, u32), AccountId>,
+        committed_round_prices: Mapping<u32, PriceData>,
         latest_price: Option<PriceData>,
     }
 
@@ -113,6 +116,7 @@ mod oracle {
                 round_submissions: Mapping::default(),
                 round_reporter_count: Mapping::default(),
                 round_reporters: Mapping::default(),
+                committed_round_prices: Mapping::default(),
                 latest_price: None,
             }
         }
@@ -180,6 +184,7 @@ mod oracle {
                 was_overridden,
             };
 
+            self.committed_round_prices.insert(round_id, &price_data);
             self.latest_price = Some(price_data);
             self.current_round_id = self
                 .current_round_id
@@ -228,6 +233,42 @@ mod oracle {
         #[ink(message)]
         pub fn get_latest_price(&self) -> Option<PriceData> {
             self.latest_price
+        }
+
+        #[ink(message)]
+        pub fn get_round_price(&self, round_id: u32) -> Option<PriceData> {
+            self.committed_round_prices.get(round_id)
+        }
+
+        #[ink(message)]
+        pub fn get_price_history_count(&self) -> u32 {
+            self.current_round_id
+        }
+
+        #[ink(message)]
+        pub fn get_price_history(&self, page: u32) -> Vec<PriceData> {
+            let Some(latest_round_id) = self.latest_committed_round_id() else {
+                return Vec::new();
+            };
+
+            let total_prices = self.current_round_id;
+            let start = page.saturating_mul(PAGE_SIZE);
+            if start >= total_prices {
+                return Vec::new();
+            }
+            let end = min(start.saturating_add(PAGE_SIZE), total_prices);
+
+            let mut history = Vec::new();
+            for offset in start..end {
+                let round_id = latest_round_id - offset;
+                let price_data = self
+                    .committed_round_prices
+                    .get(round_id)
+                    .expect("committed round price should exist");
+                history.push(price_data);
+            }
+
+            history
         }
 
         #[ink(message)]
@@ -284,6 +325,10 @@ mod oracle {
                 return Err(Error::NotValidator);
             }
             Ok(())
+        }
+
+        fn latest_committed_round_id(&self) -> Option<u32> {
+            self.current_round_id.checked_sub(1)
         }
 
         fn compute_round_median(&self, round_id: u32) -> Result<Option<Ratio>> {
