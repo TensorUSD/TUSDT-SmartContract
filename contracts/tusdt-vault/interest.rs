@@ -3,7 +3,7 @@ use ink::codegen::Env as _;
 use tusdt_primitives::{HOURS_PER_YEAR, MILLISECONDS_PER_HOUR};
 
 impl TusdtVault {
-    pub(crate) fn accrue_interest(&self, vault: &mut Vault) -> Result<()> {
+    pub(crate) fn accrue_interest_for_vault(&self, vault: &mut Vault) -> Result<()> {
         let now = self.env().block_timestamp();
         if now <= vault.last_interest_accrued_at {
             return Ok(());

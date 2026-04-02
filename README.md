@@ -117,14 +117,14 @@ The current e2e test suite is intentionally oracle-only, and the only deployment
 2. User adds collateral: `add_collateral` (payable).
 3. User borrows token: `borrow_token`.
 4. User repays token: `repay_token`.
-5. User releases collateral (only when debt is zero): `release_collateral`.
+5. Anyone can trigger vault debt accrual: `accrue_interest(owner, vault_id)`.
+6. User releases collateral (only when debt is zero): `release_collateral`.
 
 ### 2) Interest model
 
-- Accrual is day-based.
-- Growth model is compound interest equivalent to:
-  `borrowed * e^(interest_rate * borrowed_days / 365)`.
-- Implementation computes daily growth and compounds by elapsed full days.
+- Accrual is hour-based.
+- Growth model uses discrete hourly compounding from the configured annual interest rate.
+- Implementation compounds by elapsed full hours and advances `last_interest_accrued_at` to the last fully accrued hour.
 
 ### 3) Liquidation flow
 

@@ -129,6 +129,17 @@ mod vault {
     }
 
     #[ink(event)]
+    pub struct InterestAccrued {
+        #[ink(topic)]
+        owner: AccountId,
+        #[ink(topic)]
+        vault_id: u32,
+        previous_borrowed_balance: Balance,
+        borrowed_balance: Balance,
+        accrued_at: u64,
+    }
+
+    #[ink(event)]
     pub struct ContractParamsUpdated {
         params: VaultContractParamsPercentage,
     }
@@ -334,7 +345,7 @@ mod vault {
         pub fn borrow_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
-            self.accrue_interest(&mut vault)?;
+            self.accrue_interest_for_vault(&mut vault)?;
             let price = self.current_collateral_price()?;
 
             let max_borrow = self.max_borrow_allowed(price, vault.collateral_balance)?;
@@ -368,7 +379,7 @@ mod vault {
         pub fn repay_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
-            self.accrue_interest(&mut vault)?;
+            self.accrue_interest_for_vault(&mut vault)?;
             if amount > vault.borrowed_token_balance {
                 return Err(Error::RepayAmountTooHigh);
             }
@@ -392,6 +403,30 @@ mod vault {
             Ok(())
         }
 
+        /// Accrues any elapsed interest for a vault and returns the updated debt balance.
+        #[ink(message)]
+        pub fn accrue_interest(&mut self, owner: AccountId, vault_id: u32) -> Result<Balance> {
+            self.ensure_not_in_liquidation(owner, vault_id)?;
+
+            let mut vault = self.load_vault(owner, vault_id)?;
+            let previous_borrowed_balance = vault.borrowed_token_balance;
+
+            self.accrue_interest_for_vault(&mut vault)?;
+            let borrowed_balance = vault.borrowed_token_balance;
+            let accrued_at = vault.last_interest_accrued_at;
+
+            self.save_vault(owner, vault_id, &vault);
+            self.env().emit_event(InterestAccrued {
+                owner,
+                vault_id,
+                previous_borrowed_balance,
+                borrowed_balance,
+                accrued_at,
+            });
+
+            Ok(borrowed_balance)
+        }
+
         /// Releases collateral from a vault while ensuring the remaining collateral maintains the minimum collateral ratio.
         #[ink(message)]
         pub fn release_collateral(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
@@ -401,7 +436,7 @@ mod vault {
                 return Err(Error::InsufficientCollateral);
             }
 
-            self.accrue_interest(&mut vault)?;
+            self.accrue_interest_for_vault(&mut vault)?;
             let projected_collateral = vault
                 .collateral_balance
                 .checked_sub(amount)
@@ -447,7 +482,7 @@ mod vault {
             }
 
             let mut vault = self.load_vault(owner, vault_id)?;
-            self.accrue_interest(&mut vault)?;
+            self.accrue_interest_for_vault(&mut vault)?;
             let price = self.current_collateral_price()?;
 
             if !self.is_liquidatable(price, &vault)? {

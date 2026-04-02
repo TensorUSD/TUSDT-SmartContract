@@ -324,12 +324,12 @@ fn interest_accrues_after_full_hours_only() {
     };
 
     set_time(MILLISECONDS_PER_HOUR / 2);
-    assert_eq!(vault_contract.accrue_interest(&mut vault), Ok(()));
+    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
     assert_eq!(vault.borrowed_token_balance, 1_000_000);
     assert_eq!(vault.last_interest_accrued_at, 0);
 
     set_time(MILLISECONDS_PER_HOUR);
-    assert_eq!(vault_contract.accrue_interest(&mut vault), Ok(()));
+    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
     assert!(vault.borrowed_token_balance > 1_000_000);
     assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_HOUR);
 }
@@ -361,9 +361,51 @@ fn interest_uses_hourly_discrete_compounding() {
     );
 
     set_time(30 * 24 * MILLISECONDS_PER_HOUR);
-    assert_eq!(vault_contract.accrue_interest(&mut vault), Ok(()));
+    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
     assert_eq!(vault.borrowed_token_balance, 100_825);
     assert_eq!(vault.last_interest_accrued_at, 30 * 24 * MILLISECONDS_PER_HOUR);
+}
+
+#[ink::test]
+fn accrue_interest_message_updates_stored_vault_balance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
+
+    set_time(0);
+    let vault_id = create_vault_with_collateral(&mut vault_contract, accounts.alice, 1_000);
+
+    let mut stored_vault = vault_contract
+        .get_vault(accounts.alice, vault_id)
+        .expect("vault should exist");
+    stored_vault.borrowed_token_balance = 100_000;
+    stored_vault.last_interest_accrued_at = 0;
+    vault_contract.save_vault(accounts.alice, vault_id, &stored_vault);
+
+    set_time(30 * 24 * MILLISECONDS_PER_HOUR);
+    assert_eq!(
+        vault_contract.accrue_interest(accounts.alice, vault_id),
+        Ok(100_411)
+    );
+
+    let updated_vault = vault_contract
+        .get_vault(accounts.alice, vault_id)
+        .expect("vault should still exist");
+    assert_eq!(updated_vault.borrowed_token_balance, 100_411);
+    assert_eq!(
+        updated_vault.last_interest_accrued_at,
+        30 * 24 * MILLISECONDS_PER_HOUR
+    );
+}
+
+#[ink::test]
+fn accrue_interest_message_rejects_missing_vault() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
+
+    assert_eq!(
+        vault_contract.accrue_interest(accounts.alice, 0),
+        Err(Error::VaultNotFound)
+    );
 }
 
 #[ink::test]
