@@ -11,13 +11,31 @@ fn set_time(timestamp: u64) {
     ink::env::test::set_block_timestamp::<tusdt_env::CustomEnvironment>(timestamp);
 }
 
-fn submit_price(
+fn account_from_seed(seed: u32) -> ink::primitives::AccountId {
+    let mut bytes = [0_u8; 32];
+    bytes[..4].copy_from_slice(&seed.to_le_bytes());
+    ink::primitives::AccountId::from(bytes)
+}
+
+fn submit_price(oracle: &mut TusdtOracle, reporter: ink::primitives::AccountId, price: u128) {
+    set_caller(reporter);
+    assert_eq!(
+        oracle.submit_price(Ratio::from_integer(price), None),
+        Ok(())
+    );
+}
+
+fn submit_price_with_metadata(
     oracle: &mut TusdtOracle,
     reporter: ink::primitives::AccountId,
     price: u128,
+    metadata: Option<PriceSubmissionMetadata>,
 ) {
     set_caller(reporter);
-    assert_eq!(oracle.submit_price(Ratio::from_integer(price)), Ok(()));
+    assert_eq!(
+        oracle.submit_price(Ratio::from_integer(price), metadata),
+        Ok(())
+    );
 }
 
 #[ink::test]
@@ -28,7 +46,7 @@ fn reporter_whitelist_is_enforced() {
 
     set_caller(accounts.bob);
     assert_eq!(
-        oracle.submit_price(Ratio::from_integer(10)),
+        oracle.submit_price(Ratio::from_integer(10), None),
         Err(Error::NotReporter)
     );
 }
@@ -42,7 +60,7 @@ fn zero_price_is_rejected() {
 
     set_caller(accounts.bob);
     assert_eq!(
-        oracle.submit_price(Ratio::from_integer(0)),
+        oracle.submit_price(Ratio::from_integer(0), None),
         Err(Error::InvalidPrice)
     );
 }
@@ -68,6 +86,26 @@ fn reporter_resubmission_replaces_previous_value() {
             reporter_count: 3,
             median_price: Some(Ratio::from_integer(13)),
         }
+    );
+    assert_eq!(
+        oracle.get_round_submissions(0),
+        vec![
+            PriceSubmission {
+                reporter: accounts.bob,
+                price: Ratio::from_integer(12),
+                metadata: None,
+            },
+            PriceSubmission {
+                reporter: accounts.charlie,
+                price: Ratio::from_integer(13),
+                metadata: None,
+            },
+            PriceSubmission {
+                reporter: accounts.django,
+                price: Ratio::from_integer(14),
+                metadata: None,
+            },
+        ]
     );
 }
 
@@ -364,4 +402,74 @@ fn committed_round_history_supports_pagination() {
     assert_eq!(page_1[1].round_id, 0);
 
     assert!(oracle.get_price_history(2).is_empty());
+}
+
+#[ink::test]
+fn round_submissions_include_metadata() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
+    assert_eq!(oracle.set_reporter(accounts.charlie, true), Ok(()));
+
+    submit_price_with_metadata(
+        &mut oracle,
+        accounts.bob,
+        12,
+        Some(PriceSubmissionMetadata {
+            hot_key: accounts.eve,
+        }),
+    );
+    submit_price(&mut oracle, accounts.charlie, 15);
+
+    assert_eq!(
+        oracle.get_round_submissions(0),
+        vec![
+            PriceSubmission {
+                reporter: accounts.bob,
+                price: Ratio::from_integer(12),
+                metadata: Some(PriceSubmissionMetadata {
+                    hot_key: accounts.eve,
+                }),
+            },
+            PriceSubmission {
+                reporter: accounts.charlie,
+                price: Ratio::from_integer(15),
+                metadata: None,
+            },
+        ]
+    );
+}
+
+#[ink::test]
+fn round_submission_count_is_bounded() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+
+    let max_submissions = oracle.max_round_submissions();
+    for seed in 0..max_submissions {
+        let reporter = account_from_seed(seed + 1);
+        set_caller(accounts.alice);
+        assert_eq!(oracle.set_reporter(reporter, true), Ok(()));
+        submit_price(&mut oracle, reporter, seed as u128 + 1);
+    }
+
+    let overflow_reporter = account_from_seed(max_submissions + 1);
+    set_caller(accounts.alice);
+    assert_eq!(oracle.set_reporter(overflow_reporter, true), Ok(()));
+    set_caller(overflow_reporter);
+    assert_eq!(
+        oracle.submit_price(Ratio::from_integer(999), None),
+        Err(Error::MaxSubmissionsReached)
+    );
+
+    assert_eq!(
+        oracle.get_current_round_summary().reporter_count,
+        max_submissions
+    );
+    assert_eq!(
+        oracle.get_round_submissions(0).len(),
+        max_submissions as usize
+    );
 }

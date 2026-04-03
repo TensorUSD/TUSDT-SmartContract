@@ -34,6 +34,16 @@ export interface OraclePriceData {
   wasOverridden: boolean;
 }
 
+export interface OraclePriceSubmissionMetadata {
+  hotKey: string;
+}
+
+export interface OraclePriceSubmission {
+  reporter: string;
+  price: string | null;
+  metadata: OraclePriceSubmissionMetadata | null;
+}
+
 export function parseCliFlag(name: string): string | undefined {
   const args = process.argv.slice(2);
   const index = args.indexOf(name);
@@ -97,8 +107,18 @@ export async function submitPrice(
   oracle: ContractPromise,
   signer: KeyringPair,
   priceInteger: bigint | number | string,
+  metadata?: OraclePriceSubmissionMetadata | null,
 ) {
-  return txMessage(api, oracle, "submit_price", signer, [ratioFromInteger(priceInteger)]);
+  const metadataArg =
+    metadata === undefined
+      ? null
+      : metadata === null
+        ? null
+        : { hot_key: metadata.hotKey };
+  return txMessage(api, oracle, "submit_price", signer, [
+    ratioFromInteger(priceInteger),
+    metadataArg,
+  ]);
 }
 
 export async function commitRound(
@@ -116,9 +136,17 @@ export async function dryRunSubmitPrice(
   oracle: ContractPromise,
   callerAddress: string,
   priceInteger: bigint | number | string,
+  metadata?: OraclePriceSubmissionMetadata | null,
 ) {
+  const metadataArg =
+    metadata === undefined
+      ? null
+      : metadata === null
+        ? null
+        : { hot_key: metadata.hotKey };
   return queryMessage(oracle, "submit_price", callerAddress, [
     ratioFromInteger(priceInteger),
+    metadataArg,
   ]);
 }
 
@@ -225,6 +253,41 @@ export async function queryLatestPrice(
       pickProperty(priceData, "was_overridden", "wasOverridden"),
     ),
   };
+}
+
+export async function queryRoundSubmissions(
+  oracle: ContractPromise,
+  callerAddress: string,
+  roundId: number,
+): Promise<OraclePriceSubmission[]> {
+  const result = await queryMessage(
+    oracle,
+    "get_round_submissions",
+    callerAddress,
+    [roundId],
+  );
+  if (!result.decoded.ok) {
+    throw new Error(formatInkError(result.decoded.error));
+  }
+
+  return (toPrimitive(result.decoded.value) as unknown[]).map((entry) => {
+    const submission = toPrimitive(entry);
+    const metadataValue = pickProperty(submission, "metadata");
+    const metadata =
+      metadataValue === null || metadataValue === undefined
+        ? null
+        : {
+            hotKey: String(
+              pickProperty(toPrimitive(metadataValue), "hot_key", "hotKey"),
+            ),
+          };
+
+    return {
+      reporter: String(pickProperty(submission, "reporter")),
+      price: ratioInnerToDisplay(pickProperty(submission, "price")),
+      metadata,
+    };
+  });
 }
 
 export function requireAddress(value: string | undefined): string {
