@@ -48,6 +48,7 @@ mod vault {
         pub liquidation_ratio: Ratio,
         pub interest_rate: Ratio,
         pub liquidation_fee: Ratio,
+        pub borrow_cap: Balance,
         pub auction_duration_ms: u64,
         pub max_oracle_age_ms: u64,
     }
@@ -55,11 +56,12 @@ mod vault {
     #[derive(Debug, Copy, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
-    pub struct VaultContractParamsPercentage {
+    pub struct VaultContractParamsConfig {
         pub collateral_ratio: u32,
         pub liquidation_ratio: u32,
         pub interest_rate: u32,
         pub liquidation_fee: u32,
+        pub borrow_cap: Balance,
         pub auction_duration_ms: u64,
         pub max_oracle_age_ms: u64,
     }
@@ -143,7 +145,7 @@ mod vault {
 
     #[ink(event)]
     pub struct ContractParamsUpdated {
-        params: VaultContractParamsPercentage,
+        params: VaultContractParamsConfig,
     }
 
     #[ink(event)]
@@ -190,6 +192,7 @@ mod vault {
         InvalidAuctionDuration,
         CollateralRatioExceeded,
         LiquidationRatioExceeded,
+        BorrowCapExceeded,
         RepayAmountTooHigh,
         VaultInLiquidation,
         NotLiquidatable,
@@ -249,10 +252,10 @@ mod vault {
 
         /// Updates contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) with validation; only callable by governance.
         #[ink(message)]
-        pub fn set_contract_params(&mut self, params: VaultContractParamsPercentage) -> Result<()> {
+        pub fn set_contract_params(&mut self, params: VaultContractParamsConfig) -> Result<()> {
             self.ensure_governance()?;
 
-            let validated = Self::contract_params_from_percentages(params)?;
+            let validated = Self::contract_params_from_config(params)?;
             self.params = validated;
 
             self.env().emit_event(ContractParamsUpdated { params });
@@ -354,6 +357,14 @@ mod vault {
                 .ok_or(Error::ArithmeticError)?;
             if projected_borrowed > max_borrow {
                 return Err(Error::CollateralRatioExceeded);
+            }
+            let projected_total_supply = self
+                .token
+                .total_supply()
+                .checked_add(amount)
+                .ok_or(Error::ArithmeticError)?;
+            if projected_total_supply > self.params.borrow_cap {
+                return Err(Error::BorrowCapExceeded);
             }
 
             self.token
@@ -616,10 +627,10 @@ mod vault {
             self.governance
         }
 
-        /// Returns the current contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) as percentages.
+        /// Returns the current contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) in the external config format.
         #[ink(message)]
-        pub fn get_contract_params(&self) -> VaultContractParamsPercentage {
-            Self::contract_params_to_percentages(self.params)
+        pub fn get_contract_params(&self) -> VaultContractParamsConfig {
+            Self::contract_params_to_config(self.params)
         }
 
         /// Returns the collateral balance for a vault, or None if the vault does not exist.

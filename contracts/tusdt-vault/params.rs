@@ -4,6 +4,7 @@ const DEFAULT_COLLATERAL_RATIO_PERCENT: u32 = 150;
 const DEFAULT_LIQUIDATION_RATIO_PERCENT: u32 = 120;
 const DEFAULT_INTEREST_RATE_PERCENT: u32 = 5;
 const DEFAULT_LIQUIDATION_FEE_PERCENT: u32 = 1;
+const DEFAULT_BORROW_CAP: Balance = 100_000_000_000_000_000; // 100 Million
 const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
 const DEFAULT_MAX_ORACLE_AGE_MS: u64 = 3_600_000;
 
@@ -14,6 +15,7 @@ impl TusdtVault {
             liquidation_ratio: Ratio::from_percentage(DEFAULT_LIQUIDATION_RATIO_PERCENT),
             interest_rate: Ratio::from_percentage(DEFAULT_INTEREST_RATE_PERCENT),
             liquidation_fee: Ratio::from_percentage(DEFAULT_LIQUIDATION_FEE_PERCENT),
+            borrow_cap: DEFAULT_BORROW_CAP,
             auction_duration_ms: DEFAULT_AUCTION_DURATION_MS,
             max_oracle_age_ms: DEFAULT_MAX_ORACLE_AGE_MS,
         };
@@ -22,25 +24,26 @@ impl TusdtVault {
         params
     }
 
-    pub(crate) fn contract_params_from_percentages(
-        params: VaultContractParamsPercentage,
+    pub(crate) fn contract_params_from_config(
+        params: VaultContractParamsConfig,
     ) -> Result<VaultContractParams> {
-        let ratio_params = VaultContractParams {
+        let config = VaultContractParams {
             collateral_ratio: Ratio::from_percentage(params.collateral_ratio),
             liquidation_ratio: Ratio::from_percentage(params.liquidation_ratio),
             interest_rate: Ratio::from_percentage(params.interest_rate),
             liquidation_fee: Ratio::from_percentage(params.liquidation_fee),
+            borrow_cap: params.borrow_cap,
             auction_duration_ms: params.auction_duration_ms,
             max_oracle_age_ms: params.max_oracle_age_ms,
         };
-        Self::validate_contract_params(&ratio_params)?;
-        Ok(ratio_params)
+        Self::validate_contract_params(&config)?;
+        Ok(config)
     }
 
-    pub(crate) fn contract_params_to_percentages(
+    pub(crate) fn contract_params_to_config(
         params: VaultContractParams,
-    ) -> VaultContractParamsPercentage {
-        VaultContractParamsPercentage {
+    ) -> VaultContractParamsConfig {
+        VaultContractParamsConfig {
             collateral_ratio: params
                 .collateral_ratio
                 .to_percentage()
@@ -57,6 +60,7 @@ impl TusdtVault {
                 .liquidation_fee
                 .to_percentage()
                 .expect("stored liquidation fee should fit in u32 percentage"),
+            borrow_cap: params.borrow_cap,
             auction_duration_ms: params.auction_duration_ms,
             max_oracle_age_ms: params.max_oracle_age_ms,
         }

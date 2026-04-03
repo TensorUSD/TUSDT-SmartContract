@@ -125,11 +125,12 @@ fn set_contract_params_enforces_governance_and_validation() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
-    let valid = VaultContractParamsPercentage {
+    let valid = VaultContractParamsConfig {
         collateral_ratio: 200,
         liquidation_ratio: 130,
         interest_rate: 7,
         liquidation_fee: 2,
+        borrow_cap: 1_000_000,
         auction_duration_ms: 120_000,
         max_oracle_age_ms: 600_000,
     };
@@ -139,33 +140,36 @@ fn set_contract_params_enforces_governance_and_validation() {
 
     set_caller(accounts.alice);
     assert_eq!(
-        vault.set_contract_params(VaultContractParamsPercentage {
+        vault.set_contract_params(VaultContractParamsConfig {
             collateral_ratio: 99,
             liquidation_ratio: 130,
             interest_rate: 7,
             liquidation_fee: 2,
+            borrow_cap: 1_000_000,
             auction_duration_ms: 120_000,
             max_oracle_age_ms: 600_000,
         }),
         Err(Error::InvalidRatio)
     );
     assert_eq!(
-        vault.set_contract_params(VaultContractParamsPercentage {
+        vault.set_contract_params(VaultContractParamsConfig {
             collateral_ratio: 200,
             liquidation_ratio: 130,
             interest_rate: 7,
             liquidation_fee: 2,
+            borrow_cap: 1_000_000,
             auction_duration_ms: 59_999,
             max_oracle_age_ms: 600_000,
         }),
         Err(Error::InvalidAuctionDuration)
     );
     assert_eq!(
-        vault.set_contract_params(VaultContractParamsPercentage {
+        vault.set_contract_params(VaultContractParamsConfig {
             collateral_ratio: 200,
             liquidation_ratio: 130,
             interest_rate: 7,
             liquidation_fee: 2,
+            borrow_cap: 1_000_000,
             auction_duration_ms: 120_000,
             max_oracle_age_ms: 0,
         }),
@@ -178,6 +182,7 @@ fn set_contract_params_enforces_governance_and_validation() {
     assert_eq!(params.liquidation_ratio, 130);
     assert_eq!(params.interest_rate, 7);
     assert_eq!(params.liquidation_fee, 2);
+    assert_eq!(params.borrow_cap, 1_000_000);
     assert_eq!(params.auction_duration_ms, 120_000);
     assert_eq!(params.max_oracle_age_ms, 600_000);
 }
@@ -186,11 +191,12 @@ fn set_contract_params_enforces_governance_and_validation() {
 fn governance_can_be_updated_by_current_governance() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
-    let valid = VaultContractParamsPercentage {
+    let valid = VaultContractParamsConfig {
         collateral_ratio: 200,
         liquidation_ratio: 130,
         interest_rate: 7,
         liquidation_fee: 2,
+        borrow_cap: 1_000_000,
         auction_duration_ms: 120_000,
         max_oracle_age_ms: 600_000,
     };
@@ -356,11 +362,12 @@ fn interest_uses_hourly_discrete_compounding() {
 
     set_caller(accounts.alice);
     assert_eq!(
-        vault_contract.set_contract_params(VaultContractParamsPercentage {
+        vault_contract.set_contract_params(VaultContractParamsConfig {
             collateral_ratio: 200,
             liquidation_ratio: 130,
             interest_rate: 10,
             liquidation_fee: 2,
+            borrow_cap: 1_000_000,
             auction_duration_ms: 120_000,
             max_oracle_age_ms: 600_000,
         }),
