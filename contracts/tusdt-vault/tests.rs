@@ -60,6 +60,7 @@ fn create_vault_tracks_ids_balances_and_counts() {
     assert_eq!(alice_v0.owner, accounts.alice);
     assert_eq!(alice_v0.collateral_balance, 500);
     assert_eq!(alice_v0.borrowed_token_balance, 0);
+    assert_eq!(alice_v0.total_interest_accrued, 0);
     assert_eq!(alice_v0.created_at, 10);
     assert_eq!(alice_v0.last_interest_accrued_at, 10);
 
@@ -134,10 +135,7 @@ fn set_contract_params_enforces_governance_and_validation() {
     };
 
     set_caller(accounts.bob);
-    assert_eq!(
-        vault.set_contract_params(valid),
-        Err(Error::NotGovernance)
-    );
+    assert_eq!(vault.set_contract_params(valid), Err(Error::NotGovernance));
 
     set_caller(accounts.alice);
     assert_eq!(
@@ -321,6 +319,7 @@ fn interest_accrues_after_full_hours_only() {
         owner: accounts.alice,
         collateral_balance: 1_000,
         borrowed_token_balance: 1_000_000,
+        total_interest_accrued: 0,
         created_at: 0,
         last_interest_accrued_at: 0,
     };
@@ -328,11 +327,16 @@ fn interest_accrues_after_full_hours_only() {
     set_time(MILLISECONDS_PER_HOUR / 2);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
     assert_eq!(vault.borrowed_token_balance, 1_000_000);
+    assert_eq!(vault.total_interest_accrued, 0);
     assert_eq!(vault.last_interest_accrued_at, 0);
 
     set_time(MILLISECONDS_PER_HOUR);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
     assert!(vault.borrowed_token_balance > 1_000_000);
+    assert_eq!(
+        vault.total_interest_accrued,
+        vault.borrowed_token_balance - 1_000_000
+    );
     assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_HOUR);
 }
 
@@ -345,6 +349,7 @@ fn interest_uses_hourly_discrete_compounding() {
         owner: accounts.alice,
         collateral_balance: 1_000,
         borrowed_token_balance: 100_000,
+        total_interest_accrued: 0,
         created_at: 0,
         last_interest_accrued_at: 0,
     };
@@ -365,7 +370,11 @@ fn interest_uses_hourly_discrete_compounding() {
     set_time(30 * 24 * MILLISECONDS_PER_HOUR);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
     assert_eq!(vault.borrowed_token_balance, 100_825);
-    assert_eq!(vault.last_interest_accrued_at, 30 * 24 * MILLISECONDS_PER_HOUR);
+    assert_eq!(vault.total_interest_accrued, 825);
+    assert_eq!(
+        vault.last_interest_accrued_at,
+        30 * 24 * MILLISECONDS_PER_HOUR
+    );
 }
 
 #[ink::test]
@@ -380,6 +389,7 @@ fn accrue_interest_message_updates_stored_vault_balance() {
         .get_vault(accounts.alice, vault_id)
         .expect("vault should exist");
     stored_vault.borrowed_token_balance = 100_000;
+    stored_vault.total_interest_accrued = 0;
     stored_vault.last_interest_accrued_at = 0;
     assert_eq!(
         vault_contract.save_vault(accounts.alice, vault_id, &stored_vault),
@@ -396,6 +406,7 @@ fn accrue_interest_message_updates_stored_vault_balance() {
         .get_vault(accounts.alice, vault_id)
         .expect("vault should still exist");
     assert_eq!(updated_vault.borrowed_token_balance, 100_411);
+    assert_eq!(updated_vault.total_interest_accrued, 411);
     assert_eq!(vault_contract.get_total_debt(accounts.alice), 100_411);
     assert_eq!(
         updated_vault.last_interest_accrued_at,
@@ -474,6 +485,7 @@ fn liquidatable_check_uses_liquidation_ratio_limit() {
         owner: accounts.alice,
         collateral_balance: 120,
         borrowed_token_balance: 100,
+        total_interest_accrued: 0,
         created_at: 0,
         last_interest_accrued_at: 0,
     };

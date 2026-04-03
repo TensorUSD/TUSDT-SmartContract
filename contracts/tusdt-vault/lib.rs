@@ -35,6 +35,7 @@ mod vault {
         pub owner: AccountId,
         pub collateral_balance: Balance,
         pub borrowed_token_balance: Balance,
+        pub total_interest_accrued: Balance,
         pub created_at: u64,
         pub last_interest_accrued_at: u64,
     }
@@ -209,11 +210,7 @@ mod vault {
     impl TusdtVault {
         /// Initializes the vault contract by instantiating the token and auction contracts with the provided code hashes.
         #[ink(constructor)]
-        pub fn new(
-            token_code_hash: Hash,
-            auction_code_hash: Hash,
-            oracle_code_hash: Hash,
-        ) -> Self {
+        pub fn new(token_code_hash: Hash, auction_code_hash: Hash, oracle_code_hash: Hash) -> Self {
             let governance = Self::env().caller();
 
             let contract_account = Self::env().account_id();
@@ -222,8 +219,7 @@ mod vault {
                 .endowment(0)
                 .salt_bytes([0; 32])
                 .instantiate();
-            let auction =
-                TusdtAuctionRef::new(contract_account, governance, token.to_account_id())
+            let auction = TusdtAuctionRef::new(contract_account, governance, token.to_account_id())
                 .code_hash(auction_code_hash)
                 .endowment(0)
                 .salt_bytes([1; 32])
@@ -294,6 +290,7 @@ mod vault {
                 owner: caller,
                 collateral_balance: amount,
                 borrowed_token_balance: 0,
+                total_interest_accrued: 0,
                 created_at: timestamp,
                 last_interest_accrued_at: timestamp,
             };
