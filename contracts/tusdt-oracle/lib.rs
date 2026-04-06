@@ -306,7 +306,9 @@ mod oracle {
 
             let mut history = Vec::new();
             for offset in start..end {
-                let round_id = latest_round_id - offset;
+                let round_id = latest_round_id
+                    .checked_sub(offset)
+                    .expect("round id should exist within computed history page");
                 let price_data = self
                     .committed_round_prices
                     .get(round_id)
