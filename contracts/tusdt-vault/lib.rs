@@ -69,6 +69,7 @@ mod vault {
     #[ink(storage)]
     pub struct TusdtVault {
         governance: AccountId,
+        paused: bool,
 
         // Token address of tusdt.
         token: TusdtErc20Ref,
@@ -157,6 +158,12 @@ mod vault {
     }
 
     #[ink(event)]
+    pub struct Paused {}
+
+    #[ink(event)]
+    pub struct Unpaused {}
+
+    #[ink(event)]
     pub struct LiquidationAuctionCreated {
         #[ink(topic)]
         owner: AccountId,
@@ -202,6 +209,7 @@ mod vault {
         AuctionNotFinalized,
         ArithmeticError,
         NotGovernance,
+        ContractPaused,
         OracleCallFailed,
         OraclePriceUnavailable,
         OraclePriceStale,
@@ -237,6 +245,7 @@ mod vault {
 
             Self {
                 governance,
+                paused: false,
                 token,
                 auction,
                 oracle,
@@ -280,9 +289,31 @@ mod vault {
             Ok(())
         }
 
+        #[ink(message)]
+        pub fn pause(&mut self) -> Result<()> {
+            self.ensure_governance()?;
+
+            self.paused = true;
+            self.env().emit_event(Paused {});
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn unpause(&mut self) -> Result<()> {
+            self.ensure_governance()?;
+
+            self.paused = false;
+            self.env().emit_event(Unpaused {});
+
+            Ok(())
+        }
+
         /// Creates a new vault for the caller with the transferred collateral and returns the vault ID.
         #[ink(message, payable)]
         pub fn create_vault(&mut self) -> Result<u32> {
+            self.ensure_not_paused()?;
+
             let caller = self.env().caller();
             let amount = self.env().transferred_value();
             let timestamp = self.env().block_timestamp();
@@ -320,6 +351,8 @@ mod vault {
         /// Adds the transferred collateral amount to an existing vault.
         #[ink(message, payable)]
         pub fn add_collateral(&mut self, vault_id: u32) -> Result<()> {
+            self.ensure_not_paused()?;
+
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
             let amount = self.env().transferred_value();
 
@@ -345,6 +378,8 @@ mod vault {
         /// Borrows tokens against the vault's collateral, validating collateral ratio and accruing interest.
         #[ink(message)]
         pub fn borrow_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
+            self.ensure_not_paused()?;
+
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             self.accrue_interest_for_vault(&mut vault)?;
@@ -387,6 +422,8 @@ mod vault {
         /// Repays borrowed tokens from a vault, accruing interest and burning the repaid tokens.
         #[ink(message)]
         pub fn repay_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
+            self.ensure_not_paused()?;
+
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             self.accrue_interest_for_vault(&mut vault)?;
@@ -416,6 +453,8 @@ mod vault {
         /// Accrues any elapsed interest for a vault and returns the updated debt balance.
         #[ink(message)]
         pub fn accrue_interest(&mut self, owner: AccountId, vault_id: u32) -> Result<Balance> {
+            self.ensure_not_paused()?;
+
             self.ensure_not_in_liquidation(owner, vault_id)?;
 
             let mut vault = self.load_vault(owner, vault_id)?;
@@ -440,6 +479,8 @@ mod vault {
         /// Releases collateral from a vault while ensuring the remaining collateral maintains the minimum collateral ratio.
         #[ink(message)]
         pub fn release_collateral(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
+            self.ensure_not_paused()?;
+
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             if vault.collateral_balance < amount {
@@ -487,6 +528,8 @@ mod vault {
             owner: AccountId,
             vault_id: u32,
         ) -> Result<u32> {
+            self.ensure_not_paused()?;
+
             if self.liquidation_auctions.get((owner, vault_id)).is_some() {
                 return Err(Error::LiquidationAuctionExists);
             }
@@ -542,6 +585,8 @@ mod vault {
             owner: AccountId,
             vault_id: u32,
         ) -> Result<()> {
+            self.ensure_not_paused()?;
+
             let auction_id = self
                 .liquidation_auctions
                 .get((owner, vault_id))
@@ -625,6 +670,12 @@ mod vault {
         #[ink(message)]
         pub fn governance(&self) -> AccountId {
             self.governance
+        }
+
+        /// Returns whether the contract is paused by governance.
+        #[ink(message)]
+        pub fn paused(&self) -> bool {
+            self.paused
         }
 
         /// Returns the current contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) in the external config format.
@@ -793,6 +844,14 @@ mod vault {
             Ok(())
         }
 
+        #[inline]
+        fn ensure_not_paused(&self) -> Result<()> {
+            if self.paused {
+                return Err(Error::ContractPaused);
+            }
+            Ok(())
+        }
+
         #[cfg(not(test))]
         fn sync_child_governance(&mut self, new_governance: AccountId) -> Result<()> {
             self.auction
@@ -819,6 +878,7 @@ mod vault {
 
             Self {
                 governance,
+                paused: false,
                 token: TusdtErc20Ref::from_account_id(accounts.charlie),
                 auction: TusdtAuctionRef::from_account_id(accounts.django),
                 oracle: TusdtOracleRef::from_account_id(accounts.eve),

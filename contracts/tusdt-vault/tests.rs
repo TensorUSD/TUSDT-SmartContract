@@ -219,6 +219,61 @@ fn governance_can_be_updated_by_current_governance() {
 }
 
 #[ink::test]
+fn governance_can_pause_and_unpause_contract() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    assert!(!vault.paused());
+
+    set_caller(accounts.bob);
+    assert_eq!(vault.pause(), Err(Error::NotGovernance));
+    assert!(!vault.paused());
+
+    set_caller(accounts.alice);
+    assert_eq!(vault.pause(), Ok(()));
+    assert!(vault.paused());
+
+    assert_eq!(vault.unpause(), Ok(()));
+    assert!(!vault.paused());
+}
+
+#[ink::test]
+fn paused_contract_rejects_mutations() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    let vault_id = create_vault_with_collateral(&mut vault, accounts.alice, 400);
+
+    set_caller(accounts.alice);
+    assert_eq!(vault.pause(), Ok(()));
+
+    transfer_in(100);
+    assert_eq!(vault.create_vault(), Err(Error::ContractPaused));
+
+    transfer_in(50);
+    assert_eq!(vault.add_collateral(vault_id), Err(Error::ContractPaused));
+
+    assert_eq!(
+        vault.release_collateral(vault_id, 10),
+        Err(Error::ContractPaused)
+    );
+    assert_eq!(
+        vault.accrue_interest(accounts.alice, vault_id),
+        Err(Error::ContractPaused)
+    );
+    assert_eq!(
+        vault.trigger_liquidation_auction(accounts.alice, vault_id),
+        Err(Error::ContractPaused)
+    );
+
+    vault.set_liquidation_auction_for_test(accounts.alice, vault_id, 7);
+    assert_eq!(
+        vault.settle_liquidation_auction(accounts.alice, vault_id),
+        Err(Error::ContractPaused)
+    );
+}
+
+#[ink::test]
 fn price_validation_and_collateral_math_helpers_work() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let vault = TusdtVault::new_for_test(accounts.alice);
