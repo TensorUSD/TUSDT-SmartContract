@@ -383,6 +383,13 @@ mod vault {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             self.accrue_interest_for_vault(&mut vault)?;
+
+            // If amount is 0, we still want to accrue interest, but no need to mint tokens.
+            if amount.eq(&0) {
+                self.save_vault(caller, vault_id, &vault)?;
+                return Ok(());
+            }
+
             let price = self.current_collateral_price()?;
 
             let max_borrow = self.max_borrow_allowed(price, vault.collateral_balance)?;
@@ -406,8 +413,8 @@ mod vault {
                 .mint(caller, amount)
                 .map_err(|_| Error::TransferFailed)?;
 
+            self.adjust_last_interest_accrued_at_for_new_borrow(&mut vault, amount)?;
             vault.borrowed_token_balance = projected_borrowed;
-            self.touch_last_interest_accrued_at(&mut vault);
             self.save_vault(caller, vault_id, &vault)?;
 
             self.env().emit_event(TokensBorrowed {

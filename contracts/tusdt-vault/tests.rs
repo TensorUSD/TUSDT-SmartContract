@@ -372,7 +372,7 @@ fn pagination_for_owner_and_global_vaults_works() {
 }
 
 #[ink::test]
-fn interest_accrues_after_full_hours_only() {
+fn interest_accrues_at_beginning_of_hour() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let vault_contract = TusdtVault::new_for_test(accounts.alice);
     let mut vault = Vault {
@@ -387,18 +387,104 @@ fn interest_accrues_after_full_hours_only() {
 
     set_time(MILLISECONDS_PER_HOUR / 2);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
-    assert_eq!(vault.borrowed_token_balance, 1_000_000);
-    assert_eq!(vault.total_interest_accrued, 0);
-    assert_eq!(vault.last_interest_accrued_at, 0);
-
-    set_time(MILLISECONDS_PER_HOUR);
-    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
     assert!(vault.borrowed_token_balance > 1_000_000);
     assert_eq!(
         vault.total_interest_accrued,
         vault.borrowed_token_balance - 1_000_000
     );
     assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_HOUR);
+
+    set_time(MILLISECONDS_PER_HOUR);
+    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
+    assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_HOUR);
+}
+
+#[ink::test]
+fn zero_amount_borrow_charges_current_hour() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
+
+    set_time(0);
+    let vault_id = create_vault_with_collateral(&mut vault_contract, accounts.alice, 1_000);
+
+    let mut stored_vault = vault_contract
+        .get_vault(accounts.alice, vault_id)
+        .expect("vault should exist");
+    stored_vault.borrowed_token_balance = 1_000_000;
+    stored_vault.last_interest_accrued_at = 0;
+    assert_eq!(
+        vault_contract.save_vault(accounts.alice, vault_id, &stored_vault),
+        Ok(())
+    );
+
+    set_caller(accounts.alice);
+    set_time(MILLISECONDS_PER_HOUR / 2);
+    assert_eq!(vault_contract.borrow_token(vault_id, 0), Ok(()));
+
+    let after_zero_borrow = vault_contract
+        .get_vault(accounts.alice, vault_id)
+        .expect("vault should still exist");
+    assert!(after_zero_borrow.borrowed_token_balance > 1_000_000);
+    assert_eq!(
+        after_zero_borrow.last_interest_accrued_at,
+        MILLISECONDS_PER_HOUR
+    );
+
+    set_time(MILLISECONDS_PER_HOUR + 1);
+    let accrued_balance = vault_contract
+        .accrue_interest(accounts.alice, vault_id)
+        .expect("interest accrual should succeed");
+    assert!(accrued_balance > after_zero_borrow.borrowed_token_balance);
+
+    let accrued_vault = vault_contract
+        .get_vault(accounts.alice, vault_id)
+        .expect("vault should still exist");
+    assert_eq!(
+        accrued_vault.last_interest_accrued_at,
+        2 * MILLISECONDS_PER_HOUR
+    );
+}
+
+#[ink::test]
+fn new_borrow_reweights_timestamp_toward_now() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let vault_contract = TusdtVault::new_for_test(accounts.alice);
+    let mut vault = Vault {
+        id: 0,
+        owner: accounts.alice,
+        collateral_balance: 1_000,
+        borrowed_token_balance: 1_000_000,
+        total_interest_accrued: 0,
+        created_at: 0,
+        last_interest_accrued_at: MILLISECONDS_PER_HOUR,
+    };
+
+    set_time(MILLISECONDS_PER_HOUR / 2);
+    assert_eq!(
+        vault_contract.adjust_last_interest_accrued_at_for_new_borrow(&mut vault, 1_000_000),
+        Ok(())
+    );
+    assert_eq!(
+        vault.last_interest_accrued_at,
+        (3 * MILLISECONDS_PER_HOUR) / 4
+    );
+
+    vault.borrowed_token_balance = 2_000_000;
+    set_time((3 * MILLISECONDS_PER_HOUR) / 4);
+    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
+    assert_eq!(vault.borrowed_token_balance, 2_000_000);
+    assert_eq!(
+        vault.last_interest_accrued_at,
+        (3 * MILLISECONDS_PER_HOUR) / 4
+    );
+
+    set_time((3 * MILLISECONDS_PER_HOUR) / 4 + 1);
+    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
+    assert!(vault.borrowed_token_balance > 2_000_000);
+    assert_eq!(
+        vault.last_interest_accrued_at,
+        (7 * MILLISECONDS_PER_HOUR) / 4
+    );
 }
 
 #[ink::test]
@@ -431,11 +517,11 @@ fn interest_uses_hourly_discrete_compounding() {
 
     set_time(30 * 24 * MILLISECONDS_PER_HOUR);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
-    assert_eq!(vault.borrowed_token_balance, 100_825);
-    assert_eq!(vault.total_interest_accrued, 825);
+    assert_eq!(vault.borrowed_token_balance, 100_826);
+    assert_eq!(vault.total_interest_accrued, 826);
     assert_eq!(
         vault.last_interest_accrued_at,
-        30 * 24 * MILLISECONDS_PER_HOUR
+        (30 * 24 + 1) * MILLISECONDS_PER_HOUR
     );
 }
 
@@ -461,18 +547,18 @@ fn accrue_interest_message_updates_stored_vault_balance() {
     set_time(30 * 24 * MILLISECONDS_PER_HOUR);
     assert_eq!(
         vault_contract.accrue_interest(accounts.alice, vault_id),
-        Ok(100_411)
+        Ok(100_412)
     );
 
     let updated_vault = vault_contract
         .get_vault(accounts.alice, vault_id)
         .expect("vault should still exist");
-    assert_eq!(updated_vault.borrowed_token_balance, 100_411);
-    assert_eq!(updated_vault.total_interest_accrued, 411);
-    assert_eq!(vault_contract.get_total_debt(accounts.alice), 100_411);
+    assert_eq!(updated_vault.borrowed_token_balance, 100_412);
+    assert_eq!(updated_vault.total_interest_accrued, 412);
+    assert_eq!(vault_contract.get_total_debt(accounts.alice), 100_412);
     assert_eq!(
         updated_vault.last_interest_accrued_at,
-        30 * 24 * MILLISECONDS_PER_HOUR
+        (30 * 24 + 1) * MILLISECONDS_PER_HOUR
     );
 }
 
