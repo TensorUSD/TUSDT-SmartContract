@@ -559,7 +559,7 @@ mod vault {
                 .create_auction(
                     owner,
                     vault_id,
-                    collateral_to_auction,
+                    min(collateral_to_auction, vault.collateral_balance),
                     vault.borrowed_token_balance,
                     Some(self.params.auction_duration_ms),
                 )
@@ -619,10 +619,14 @@ mod vault {
                     .burn(self.get_auction_address(), debt_cleared)
                     .map_err(|_| Error::TransferFailed)?;
 
-                vault.collateral_balance = vault.collateral_balance.saturating_sub(collateral_sold);
+                vault.collateral_balance = vault
+                    .collateral_balance
+                    .checked_sub(collateral_sold)
+                    .ok_or(Error::ArithmeticError)?;
                 self.total_collateral_balance = self
                     .total_collateral_balance
-                    .saturating_sub(collateral_sold);
+                    .checked_sub(collateral_sold)
+                    .ok_or(Error::ArithmeticError)?;
                 vault.borrowed_token_balance = 0;
             }
 
