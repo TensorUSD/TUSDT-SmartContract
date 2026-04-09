@@ -113,6 +113,15 @@ mod auction {
     }
 
     #[ink(event)]
+    pub struct WinningBidTransferred {
+        #[ink(topic)]
+        auction_id: u32,
+        #[ink(topic)]
+        recipient: AccountId,
+        amount: Balance,
+    }
+
+    #[ink(event)]
     pub struct AuctionGovernanceUpdated {
         #[ink(topic)]
         previous_governance: AccountId,
@@ -142,6 +151,7 @@ mod auction {
         AuctionFinalized,
         AuctionHasNoBids,
         WinningBidLocked,
+        WinningBidAlreadyTransferred,
         InvalidDuration,
         TransferFailed,
         NoRefundAvailable,
@@ -161,11 +171,7 @@ mod auction {
     impl TusdtAuction {
         /// Initializes the auction contract with controller, governance, and token contract reference.
         #[ink(constructor)]
-        pub fn new(
-            controller: AccountId,
-            governance: AccountId,
-            token_address: AccountId,
-        ) -> Self {
+        pub fn new(controller: AccountId, governance: AccountId, token_address: AccountId) -> Self {
             let token = TusdtErc20Ref::from_account_id(token_address);
             Self {
                 controller,
@@ -423,6 +429,49 @@ mod auction {
             });
 
             Ok(())
+        }
+
+        /// Transfers the winning bid out of the auction contract after finalization; only callable by the controller.
+        #[ink(message)]
+        pub fn transfer_winning_bid(
+            &mut self,
+            auction_id: u32,
+            recipient: AccountId,
+        ) -> Result<Balance> {
+            self.ensure_controller()?;
+
+            let auction = self
+                .auctions
+                .get(auction_id)
+                .ok_or(Error::AuctionNotFound)?;
+            if !auction.is_finalized {
+                return Err(Error::AuctionNotEnded);
+            }
+
+            let winning_bid_id = auction.highest_bid_id.ok_or(Error::AuctionHasNoBids)?;
+            let mut winning_bid = self
+                .auction_bids
+                .get((auction_id, winning_bid_id))
+                .ok_or(Error::BidNotFound)?;
+            if winning_bid.is_withdrawn {
+                return Err(Error::WinningBidAlreadyTransferred);
+            }
+
+            self.token
+                .transfer(recipient, winning_bid.amount)
+                .map_err(|_| Error::TransferFailed)?;
+
+            winning_bid.is_withdrawn = true;
+            self.auction_bids
+                .insert((auction_id, winning_bid_id), &winning_bid);
+
+            self.env().emit_event(WinningBidTransferred {
+                auction_id,
+                recipient,
+                amount: winning_bid.amount,
+            });
+
+            Ok(winning_bid.amount)
         }
 
         /// Withdraws refund for a losing bid after the auction is finalized.

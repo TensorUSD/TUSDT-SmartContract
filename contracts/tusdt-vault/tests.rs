@@ -238,6 +238,15 @@ fn governance_can_pause_and_unpause_contract() {
 }
 
 #[ink::test]
+fn claim_surplus_tusdt_requires_governance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    set_caller(accounts.bob);
+    assert_eq!(vault.claim_surplus_tusdt(1), Err(Error::NotGovernance));
+}
+
+#[ink::test]
 fn paused_contract_rejects_mutations() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);

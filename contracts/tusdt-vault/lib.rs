@@ -164,6 +164,13 @@ mod vault {
     pub struct Unpaused {}
 
     #[ink(event)]
+    pub struct SurplusTusdtClaimed {
+        #[ink(topic)]
+        recipient: AccountId,
+        amount: Balance,
+    }
+
+    #[ink(event)]
     pub struct LiquidationAuctionCreated {
         #[ink(topic)]
         owner: AccountId,
@@ -305,6 +312,23 @@ mod vault {
 
             self.paused = false;
             self.env().emit_event(Unpaused {});
+
+            Ok(())
+        }
+
+        /// Transfers surplus TUSDT held by the vault contract to governance.
+        #[ink(message)]
+        pub fn claim_surplus_tusdt(&mut self, amount: Balance) -> Result<()> {
+            self.ensure_governance()?;
+
+            self.token
+                .transfer(self.governance(), amount)
+                .map_err(|_| Error::TransferFailed)?;
+
+            self.env().emit_event(SurplusTusdtClaimed {
+                recipient: self.governance(),
+                amount,
+            });
 
             Ok(())
         }
@@ -619,11 +643,15 @@ mod vault {
                 collateral_sold = auction.collateral_balance;
                 debt_cleared = auction.debt_balance;
 
+                self.auction
+                    .transfer_winning_bid(auction_id, self.env().account_id())
+                    .map_err(|_| Error::AuctionContractCallFailed)?;
+
                 if collateral_sold > 0 && self.env().transfer(winner, collateral_sold).is_err() {
                     return Err(Error::TransferFailed);
                 }
                 self.token
-                    .burn(self.get_auction_address(), debt_cleared)
+                    .burn(self.env().account_id(), debt_cleared)
                     .map_err(|_| Error::TransferFailed)?;
 
                 vault.collateral_balance = vault

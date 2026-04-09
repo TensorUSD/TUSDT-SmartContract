@@ -246,7 +246,10 @@ fn governance_sets_admin() {
     let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     set_caller(accounts.django);
-    assert_eq!(auction.set_admin(Some(accounts.eve)), Err(Error::NotGovernance));
+    assert_eq!(
+        auction.set_admin(Some(accounts.eve)),
+        Err(Error::NotGovernance)
+    );
 
     set_caller(accounts.bob);
     assert_eq!(auction.set_admin(Some(accounts.eve)), Ok(()));
@@ -269,7 +272,10 @@ fn controller_updates_auction_governance() {
     assert_eq!(auction.governance(), accounts.django);
 
     set_caller(accounts.bob);
-    assert_eq!(auction.set_admin(Some(accounts.eve)), Err(Error::NotGovernance));
+    assert_eq!(
+        auction.set_admin(Some(accounts.eve)),
+        Err(Error::NotGovernance)
+    );
 
     set_caller(accounts.django);
     assert_eq!(auction.set_admin(Some(accounts.eve)), Ok(()));
@@ -291,6 +297,42 @@ fn finalize_auction_fails_if_already_finalized() {
     assert_eq!(
         auction.finalize_auction(auction_id),
         Err(Error::AuctionFinalized)
+    );
+}
+
+#[ink::test]
+fn transfer_winning_bid_fails_for_non_controller() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_time(100);
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+
+    let auction_id = create_default_auction(&mut auction, accounts.bob, 6);
+    auction
+        .seed_bid_for_test(auction_id, accounts.eve, 600)
+        .expect("test setup should seed a bid");
+    set_time(1_100);
+    assert_eq!(auction.finalize_auction(auction_id), Ok(()));
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        auction.transfer_winning_bid(auction_id, accounts.django),
+        Err(Error::NotController)
+    );
+}
+
+#[ink::test]
+fn transfer_winning_bid_fails_before_finalize() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
+
+    let auction_id = create_default_auction(&mut auction, accounts.bob, 7);
+    auction
+        .seed_bid_for_test(auction_id, accounts.eve, 600)
+        .expect("test setup should seed a bid");
+
+    assert_eq!(
+        auction.transfer_winning_bid(auction_id, accounts.django),
+        Err(Error::AuctionNotEnded)
     );
 }
 
