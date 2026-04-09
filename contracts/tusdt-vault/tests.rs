@@ -175,6 +175,30 @@ fn set_contract_params_enforces_governance_and_validation() {
         }),
         Err(Error::InvalidOracleMaxAge)
     );
+    assert_eq!(
+        vault.set_contract_params(VaultContractParamsConfig {
+            collateral_ratio: 130,
+            liquidation_ratio: 130,
+            interest_rate: 7,
+            liquidation_fee: 2,
+            borrow_cap: 1_000_000,
+            auction_duration_ms: 120_000,
+            max_oracle_age_ms: 600_000,
+        }),
+        Err(Error::InvalidRatio)
+    );
+    assert_eq!(
+        vault.set_contract_params(VaultContractParamsConfig {
+            collateral_ratio: 120,
+            liquidation_ratio: 130,
+            interest_rate: 7,
+            liquidation_fee: 2,
+            borrow_cap: 1_000_000,
+            auction_duration_ms: 120_000,
+            max_oracle_age_ms: 600_000,
+        }),
+        Err(Error::InvalidRatio)
+    );
 
     assert_eq!(vault.set_contract_params(valid), Ok(()));
     let params = vault.get_contract_params();

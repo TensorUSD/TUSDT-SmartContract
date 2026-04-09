@@ -76,6 +76,10 @@ impl TusdtVault {
         if params.liquidation_ratio < one {
             return Err(Error::InvalidRatio);
         }
+        // Liquidation ratio should be less than collateral ratio.
+        if params.collateral_ratio <= params.liquidation_ratio {
+            return Err(Error::InvalidRatio);
+        }
         // Interest rate should be less than or equal to 100%.
         if params.interest_rate > one {
             return Err(Error::InvalidRatio);
