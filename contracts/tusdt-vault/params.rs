@@ -7,6 +7,7 @@ const DEFAULT_LIQUIDATION_FEE_PERCENT: u32 = 1;
 const DEFAULT_BORROW_CAP: Balance = 100_000_000_000_000_000; // 100 Million
 const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
 const DEFAULT_MAX_ORACLE_AGE_MS: u64 = 3_600_000;
+const MAX_AUCTION_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
 impl TusdtVault {
     pub(crate) fn default_contract_params() -> VaultContractParams {
@@ -90,6 +91,10 @@ impl TusdtVault {
         }
         // Auction duration should be at least a minute.
         if params.auction_duration_ms < 60_000 {
+            return Err(Error::InvalidAuctionDuration);
+        }
+        // Auction duration should be short enough to keep liquidations recoverable.
+        if params.auction_duration_ms > MAX_AUCTION_DURATION_MS {
             return Err(Error::InvalidAuctionDuration);
         }
         if params.max_oracle_age_ms == 0 {

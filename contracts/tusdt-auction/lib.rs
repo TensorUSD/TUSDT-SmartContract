@@ -11,6 +11,7 @@ mod auction {
 
     const PAGE_SIZE: u32 = 10;
     const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
+    const MAX_AUCTION_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
     #[derive(Debug, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
@@ -212,7 +213,7 @@ mod auction {
             }
 
             let duration = duration_ms.unwrap_or(DEFAULT_AUCTION_DURATION_MS);
-            if duration == 0 {
+            if duration == 0 || duration > MAX_AUCTION_DURATION_MS {
                 return Err(Error::InvalidDuration);
             }
 

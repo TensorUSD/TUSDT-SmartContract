@@ -101,6 +101,10 @@ fn create_auction_fails_on_invalid_duration() {
         auction.create_auction(accounts.bob, 1, 1_000, 400, Some(0)),
         Err(Error::InvalidDuration)
     );
+    assert_eq!(
+        auction.create_auction(accounts.bob, 1, 1_000, 400, Some(604_800_001)),
+        Err(Error::InvalidDuration)
+    );
 }
 
 #[ink::test]
