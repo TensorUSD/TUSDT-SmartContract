@@ -646,6 +646,33 @@ fn interest_uses_hourly_discrete_compounding() {
 }
 
 #[ink::test]
+fn interest_accrual_saturates_at_balance_max_instead_of_reverting() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let vault_contract = TusdtVault::new_for_test(accounts.alice);
+    let mut vault = Vault {
+        id: 0,
+        owner: accounts.alice,
+        collateral_balance: 1_000,
+        borrowed_token_balance: u64::MAX - 1,
+        total_interest_accrued: 0,
+        created_at: 0,
+        last_interest_accrued_at: 0,
+    };
+
+    set_time(1);
+    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
+    assert_eq!(vault.borrowed_token_balance, u64::MAX);
+    assert_eq!(vault.total_interest_accrued, 1);
+    assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_HOUR);
+
+    set_time(MILLISECONDS_PER_HOUR + 1);
+    assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
+    assert_eq!(vault.borrowed_token_balance, u64::MAX);
+    assert_eq!(vault.total_interest_accrued, 1);
+    assert_eq!(vault.last_interest_accrued_at, 2 * MILLISECONDS_PER_HOUR);
+}
+
+#[ink::test]
 fn accrue_interest_message_updates_stored_vault_balance() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault_contract = TusdtVault::new_for_test(accounts.alice);

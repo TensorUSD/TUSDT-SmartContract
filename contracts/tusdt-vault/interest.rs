@@ -44,6 +44,7 @@ impl TusdtVault {
         let next_borrowed_balance = compounded_growth_factor
             .checked_mul_value(u128::from(previous_borrowed_balance))
             .ok_or(Error::ArithmeticError)?;
+        let next_borrowed_balance = core::cmp::min(next_borrowed_balance, u128::from(Balance::MAX));
         let next_borrowed_balance =
             Balance::try_from(next_borrowed_balance).map_err(|_| Error::ArithmeticError)?;
         let interest_accrued = next_borrowed_balance
