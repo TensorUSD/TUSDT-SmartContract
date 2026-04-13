@@ -432,8 +432,26 @@ mod oracle {
             }
 
             prices.sort_unstable();
-            let middle_index = prices.len().saturating_sub(1) / 2;
-            Ok(prices.get(middle_index).copied())
+            let middle_index = prices.len() / 2;
+            if prices.len() % 2 == 1 {
+                return Ok(prices.get(middle_index).copied());
+            }
+
+            let lower = prices
+                .get(middle_index.saturating_sub(1))
+                .copied()
+                .ok_or(Error::MedianUnavailable)?;
+            let upper = prices
+                .get(middle_index)
+                .copied()
+                .ok_or(Error::MedianUnavailable)?;
+            let average_inner = lower
+                .into_inner()
+                .checked_add(upper.into_inner())
+                .ok_or(Error::ArithmeticError)?
+                .checked_div(2)
+                .ok_or(Error::ArithmeticError)?;
+            Ok(Some(Ratio::from_inner(average_inner)))
         }
     }
 }

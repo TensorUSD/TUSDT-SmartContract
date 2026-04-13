@@ -244,6 +244,51 @@ fn median_is_used_for_five_submissions() {
 }
 
 #[ink::test]
+fn median_is_averaged_for_four_submissions() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    for reporter in [
+        accounts.bob,
+        accounts.charlie,
+        accounts.django,
+        accounts.eve,
+    ] {
+        assert_eq!(oracle.set_reporter(reporter, true), Ok(()));
+    }
+    assert_eq!(oracle.set_validator(Some(accounts.frank)), Ok(()));
+
+    submit_price(&mut oracle, accounts.bob, 40);
+    submit_price(&mut oracle, accounts.charlie, 10);
+    submit_price(&mut oracle, accounts.django, 30);
+    submit_price(&mut oracle, accounts.eve, 20);
+
+    assert_eq!(
+        oracle.get_current_round_summary(),
+        RoundSummary {
+            round_id: 0,
+            reporter_count: 4,
+            median_price: Some(Ratio::from_integer(25)),
+        }
+    );
+
+    set_time(123);
+    set_caller(accounts.frank);
+    let committed = oracle.commit_round(None).expect("commit should succeed");
+    assert_eq!(
+        committed,
+        PriceData {
+            round_id: 0,
+            price: Ratio::from_integer(25),
+            median_price: Ratio::from_integer(25),
+            reporter_count: 4,
+            committed_at: 123,
+            was_overridden: false,
+        }
+    );
+}
+
+#[ink::test]
 fn manual_override_is_stored_while_preserving_median_metadata() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
