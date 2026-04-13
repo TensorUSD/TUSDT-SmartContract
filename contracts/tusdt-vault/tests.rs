@@ -372,11 +372,21 @@ fn paused_contract_rejects_mutations() {
         vault.trigger_liquidation_auction(accounts.alice, vault_id),
         Err(Error::ContractPaused)
     );
+}
 
-    vault.set_liquidation_auction_for_test(accounts.alice, vault_id, 7);
+#[ink::test]
+fn paused_contract_still_allows_liquidation_settlement_path() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    let vault_id = create_vault_with_collateral(&mut vault, accounts.alice, 400);
+
+    set_caller(accounts.alice);
+    assert_eq!(vault.pause(), Ok(()));
+
     assert_eq!(
         vault.settle_liquidation_auction(accounts.alice, vault_id),
-        Err(Error::ContractPaused)
+        Err(Error::AuctionNotFound)
     );
 }
 

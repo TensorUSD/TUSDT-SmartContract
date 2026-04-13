@@ -683,14 +683,15 @@ mod vault {
         }
 
         /// Settles a finalized liquidation auction, transferring collateral to the winner and clearing vault debt.
+        ///
+        /// This remains callable while paused so governance can freeze new mutations without
+        /// trapping already-finalized auction proceeds in the auction contract.
         #[ink(message)]
         pub fn settle_liquidation_auction(
             &mut self,
             owner: AccountId,
             vault_id: u32,
         ) -> Result<()> {
-            self.ensure_not_paused()?;
-
             let auction_id = self
                 .liquidation_auctions
                 .get((owner, vault_id))
