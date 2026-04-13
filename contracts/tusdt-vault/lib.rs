@@ -646,24 +646,17 @@ mod vault {
                 return Err(Error::NotLiquidatable);
             }
 
-            let collateral_debt =
-                Self::collateral_needed_for_debt(price, vault.borrowed_token_balance)?;
-            let liquidation_fee = self
-                .params
-                .liquidation_fee
-                .checked_mul_value(u128::from(collateral_debt))
-                .ok_or(Error::ArithmeticError)?;
-            let liquidation_fee =
-                Balance::try_from(liquidation_fee).map_err(|_| Error::ArithmeticError)?;
-            let collateral_to_auction = collateral_debt
-                .checked_add(liquidation_fee)
-                .ok_or(Error::ArithmeticError)?;
+            let collateral_to_auction = self.collateral_to_auction(
+                price,
+                vault.borrowed_token_balance,
+                vault.collateral_balance,
+            )?;
             let auction_id = self
                 .auction
                 .create_auction(
                     owner,
                     vault_id,
-                    min(collateral_to_auction, vault.collateral_balance),
+                    collateral_to_auction,
                     vault.borrowed_token_balance,
                     Some(self.params.auction_duration_ms),
                 )

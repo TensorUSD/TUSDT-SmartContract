@@ -412,6 +412,23 @@ fn price_validation_and_collateral_math_helpers_work() {
     assert_eq!(vault.max_borrow_allowed(price, 100), Ok(200));
     assert_eq!(vault.liquidation_limit(price, 100), Ok(250));
     assert_eq!(TusdtVault::collateral_needed_for_debt(price, 300), Ok(100));
+    assert_eq!(vault.collateral_to_auction(price, 300, 150), Ok(101));
+}
+
+#[ink::test]
+fn liquidation_collateral_cap_prevents_near_zero_price_overflow() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let vault = TusdtVault::new_for_test(accounts.alice);
+    let near_zero_price = Ratio::from_inner(1);
+
+    assert_eq!(
+        TusdtVault::collateral_needed_for_debt(near_zero_price, 19),
+        Err(Error::ArithmeticError)
+    );
+    assert_eq!(
+        vault.collateral_to_auction(near_zero_price, 19, 500),
+        Ok(500)
+    );
 }
 
 #[ink::test]
