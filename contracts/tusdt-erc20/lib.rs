@@ -89,6 +89,16 @@ mod tusdt {
         }
 
         #[inline]
+        fn set_allowance(&mut self, owner: AccountId, spender: AccountId, value: Balance) {
+            self.allowances.insert((&owner, &spender), &value);
+            self.env().emit_event(Approval {
+                owner,
+                spender,
+                value,
+            });
+        }
+
+        #[inline]
         fn ensure_controller(&self) -> Result<()> {
             if self.env().caller() != self.controller {
                 return Err(Error::NotController);
@@ -157,12 +167,29 @@ mod tusdt {
         #[ink(message)]
         pub fn approve(&mut self, spender: AccountId, value: Balance) -> Result<()> {
             let owner = self.env().caller();
-            self.allowances.insert((&owner, &spender), &value);
-            self.env().emit_event(Approval {
-                owner,
-                spender,
-                value,
-            });
+            self.set_allowance(owner, spender, value);
+            Ok(())
+        }
+
+        /// Increases a spender's allowance by a specified amount.
+        #[ink(message)]
+        pub fn increase_allowance(&mut self, spender: AccountId, delta_value: Balance) -> Result<()> {
+            let owner = self.env().caller();
+            let allowance = self.allowance_impl(&owner, &spender);
+            let updated_allowance = allowance.saturating_add(delta_value);
+            self.set_allowance(owner, spender, updated_allowance);
+            Ok(())
+        }
+
+        /// Decreases a spender's allowance by a specified amount.
+        #[ink(message)]
+        pub fn decrease_allowance(&mut self, spender: AccountId, delta_value: Balance) -> Result<()> {
+            let owner = self.env().caller();
+            let allowance = self.allowance_impl(&owner, &spender);
+            let updated_allowance = allowance
+                .checked_sub(delta_value)
+                .ok_or(Error::InsufficientAllowance)?;
+            self.set_allowance(owner, spender, updated_allowance);
             Ok(())
         }
 

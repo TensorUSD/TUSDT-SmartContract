@@ -175,6 +175,50 @@ fn approve_overwrites_allowance() {
 }
 
 #[ink::test]
+fn increase_allowance_adds_to_existing_allowance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut erc20 = TusdtErc20::new(accounts.alice);
+
+    assert_eq!(erc20.approve(accounts.bob, 10), Ok(()));
+    assert_eq!(erc20.increase_allowance(accounts.bob, 7), Ok(()));
+    assert_eq!(erc20.allowance(accounts.alice, accounts.bob), 17);
+}
+
+#[ink::test]
+fn increase_allowance_saturates_at_balance_max() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut erc20 = TusdtErc20::new(accounts.alice);
+    let max_balance = <tusdt_env::CustomEnvironment as ink::env::Environment>::Balance::MAX;
+
+    assert_eq!(erc20.approve(accounts.bob, max_balance - 2), Ok(()));
+    assert_eq!(erc20.increase_allowance(accounts.bob, 10), Ok(()));
+    assert_eq!(erc20.allowance(accounts.alice, accounts.bob), max_balance);
+}
+
+#[ink::test]
+fn decrease_allowance_subtracts_from_existing_allowance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut erc20 = TusdtErc20::new(accounts.alice);
+
+    assert_eq!(erc20.approve(accounts.bob, 10), Ok(()));
+    assert_eq!(erc20.decrease_allowance(accounts.bob, 4), Ok(()));
+    assert_eq!(erc20.allowance(accounts.alice, accounts.bob), 6);
+}
+
+#[ink::test]
+fn decrease_allowance_fails_when_delta_exceeds_allowance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut erc20 = TusdtErc20::new(accounts.alice);
+
+    assert_eq!(erc20.approve(accounts.bob, 3), Ok(()));
+    assert_eq!(
+        erc20.decrease_allowance(accounts.bob, 4),
+        Err(Error::InsufficientAllowance)
+    );
+    assert_eq!(erc20.allowance(accounts.alice, accounts.bob), 3);
+}
+
+#[ink::test]
 fn transfer_from_partially_consumes_allowance() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut erc20 = TusdtErc20::new(accounts.alice);
