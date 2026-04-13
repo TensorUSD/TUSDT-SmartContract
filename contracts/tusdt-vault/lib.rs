@@ -13,6 +13,7 @@ mod vault {
     use tusdt_primitives::Ratio;
 
     const PAGE_SIZE: u32 = 10;
+    pub(crate) const CONTRACT_PARAMS_TIMELOCK_MS: u64 = 24 * 60 * 60 * 1_000;
 
     mod params {
         include!("params.rs");
@@ -66,6 +67,14 @@ mod vault {
         pub max_oracle_age_ms: u64,
     }
 
+    #[derive(Debug, Copy, Clone)]
+    #[ink::scale_derive(Decode, Encode, TypeInfo)]
+    #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
+    pub struct PendingContractParamsUpdate {
+        pub params: VaultContractParamsConfig,
+        pub execute_after: u64,
+    }
+
     #[ink(storage)]
     pub struct TusdtVault {
         governance: AccountId,
@@ -80,6 +89,7 @@ mod vault {
         total_collateral_balance: Balance,
 
         params: VaultContractParams,
+        pending_contract_params_update: Option<PendingContractParamsUpdate>,
 
         vaults: Mapping<(AccountId, u32), Vault>,
         owner_total_debt: Mapping<AccountId, Balance>,
@@ -146,6 +156,17 @@ mod vault {
 
     #[ink(event)]
     pub struct ContractParamsUpdated {
+        params: VaultContractParamsConfig,
+    }
+
+    #[ink(event)]
+    pub struct ContractParamsUpdateScheduled {
+        params: VaultContractParamsConfig,
+        execute_after: u64,
+    }
+
+    #[ink(event)]
+    pub struct ContractParamsUpdateCancelled {
         params: VaultContractParamsConfig,
     }
 
@@ -221,6 +242,8 @@ mod vault {
         OraclePriceUnavailable,
         OraclePriceStale,
         InvalidOracleMaxAge,
+        NoPendingContractParamsUpdate,
+        ContractParamsUpdateTimelockActive,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
@@ -258,6 +281,7 @@ mod vault {
                 oracle,
                 total_collateral_balance: 0,
                 params,
+                pending_contract_params_update: None,
                 vaults: Mapping::default(),
                 owner_total_debt: Mapping::default(),
                 vault_count: Mapping::default(),
@@ -266,15 +290,64 @@ mod vault {
             }
         }
 
-        /// Updates contract parameters (collateral ratio, liquidation ratio, interest rate, etc.) with validation; only callable by governance.
+        /// Schedules a contract parameter update with a fixed timelock; only callable by governance.
         #[ink(message)]
         pub fn set_contract_params(&mut self, params: VaultContractParamsConfig) -> Result<()> {
             self.ensure_governance()?;
 
-            let validated = Self::contract_params_from_config(params)?;
-            self.params = validated;
+            Self::contract_params_from_config(params)?;
 
-            self.env().emit_event(ContractParamsUpdated { params });
+            let execute_after = self
+                .env()
+                .block_timestamp()
+                .checked_add(CONTRACT_PARAMS_TIMELOCK_MS)
+                .ok_or(Error::ArithmeticError)?;
+            self.pending_contract_params_update = Some(PendingContractParamsUpdate {
+                params,
+                execute_after,
+            });
+
+            self.env().emit_event(ContractParamsUpdateScheduled {
+                params,
+                execute_after,
+            });
+
+            Ok(())
+        }
+
+        /// Executes the currently scheduled contract parameter update once its timelock has elapsed.
+        #[ink(message)]
+        pub fn execute_contract_params_update(&mut self) -> Result<()> {
+            let pending = self
+                .pending_contract_params_update
+                .ok_or(Error::NoPendingContractParamsUpdate)?;
+            if self.env().block_timestamp() < pending.execute_after {
+                return Err(Error::ContractParamsUpdateTimelockActive);
+            }
+
+            self.params = Self::contract_params_from_config(pending.params)?;
+            self.pending_contract_params_update = None;
+
+            self.env().emit_event(ContractParamsUpdated {
+                params: pending.params,
+            });
+
+            Ok(())
+        }
+
+        /// Cancels the currently scheduled contract parameter update; only callable by governance.
+        #[ink(message)]
+        pub fn cancel_contract_params_update(&mut self) -> Result<()> {
+            self.ensure_governance()?;
+
+            let pending = self
+                .pending_contract_params_update
+                .take()
+                .ok_or(Error::NoPendingContractParamsUpdate)?;
+
+            self.env().emit_event(ContractParamsUpdateCancelled {
+                params: pending.params,
+            });
 
             Ok(())
         }
@@ -723,6 +796,12 @@ mod vault {
             Self::contract_params_to_config(self.params)
         }
 
+        /// Returns the currently scheduled parameter update, if any.
+        #[ink(message)]
+        pub fn get_pending_contract_params_update(&self) -> Option<PendingContractParamsUpdate> {
+            self.pending_contract_params_update
+        }
+
         /// Returns the collateral balance for a vault, or None if the vault does not exist.
         #[ink(message)]
         pub fn get_vault_collateral_balance(
@@ -923,6 +1002,7 @@ mod vault {
                 oracle: TusdtOracleRef::from_account_id(accounts.eve),
                 total_collateral_balance: 0,
                 params: Self::default_contract_params(),
+                pending_contract_params_update: None,
                 vaults: Mapping::default(),
                 owner_total_debt: Mapping::default(),
                 vault_count: Mapping::default(),

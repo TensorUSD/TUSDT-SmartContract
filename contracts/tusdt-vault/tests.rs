@@ -124,6 +124,7 @@ fn release_collateral_checks_balance_before_oracle_path() {
 fn set_contract_params_enforces_governance_and_validation() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
+    let original = vault.get_contract_params();
 
     let valid = VaultContractParamsConfig {
         collateral_ratio: 200,
@@ -200,7 +201,38 @@ fn set_contract_params_enforces_governance_and_validation() {
         Err(Error::InvalidRatio)
     );
 
+    set_time(0);
     assert_eq!(vault.set_contract_params(valid), Ok(()));
+    let params = vault.get_contract_params();
+    assert_eq!(params.collateral_ratio, original.collateral_ratio);
+    assert_eq!(params.liquidation_ratio, original.liquidation_ratio);
+    assert_eq!(params.interest_rate, original.interest_rate);
+    assert_eq!(params.liquidation_fee, original.liquidation_fee);
+    assert_eq!(params.borrow_cap, original.borrow_cap);
+    assert_eq!(params.auction_duration_ms, original.auction_duration_ms);
+    assert_eq!(params.max_oracle_age_ms, original.max_oracle_age_ms);
+
+    let pending = vault
+        .get_pending_contract_params_update()
+        .expect("pending params update should be stored");
+    assert_eq!(pending.params.collateral_ratio, 200);
+    assert_eq!(pending.params.liquidation_ratio, 130);
+    assert_eq!(pending.params.interest_rate, 7);
+    assert_eq!(pending.params.liquidation_fee, 2);
+    assert_eq!(pending.params.borrow_cap, 1_000_000);
+    assert_eq!(pending.params.auction_duration_ms, 120_000);
+    assert_eq!(pending.params.max_oracle_age_ms, 600_000);
+
+    assert_eq!(
+        vault.execute_contract_params_update(),
+        Err(Error::ContractParamsUpdateTimelockActive)
+    );
+
+    set_time(CONTRACT_PARAMS_TIMELOCK_MS);
+    set_caller(accounts.bob);
+    assert_eq!(vault.execute_contract_params_update(), Ok(()));
+    assert!(vault.get_pending_contract_params_update().is_none());
+
     let params = vault.get_contract_params();
     assert_eq!(params.collateral_ratio, 200);
     assert_eq!(params.liquidation_ratio, 130);
@@ -240,6 +272,48 @@ fn governance_can_be_updated_by_current_governance() {
 
     set_caller(accounts.bob);
     assert_eq!(vault.set_contract_params(valid), Ok(()));
+    assert_eq!(
+        vault.execute_contract_params_update(),
+        Err(Error::ContractParamsUpdateTimelockActive)
+    );
+
+    set_time(CONTRACT_PARAMS_TIMELOCK_MS);
+    assert_eq!(vault.execute_contract_params_update(), Ok(()));
+    assert_eq!(vault.get_contract_params().collateral_ratio, 200);
+}
+
+#[ink::test]
+fn governance_can_cancel_pending_contract_params_update() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+    let valid = VaultContractParamsConfig {
+        collateral_ratio: 200,
+        liquidation_ratio: 130,
+        interest_rate: 7,
+        liquidation_fee: 2,
+        borrow_cap: 1_000_000,
+        auction_duration_ms: 120_000,
+        max_oracle_age_ms: 600_000,
+    };
+
+    set_caller(accounts.alice);
+    set_time(0);
+    assert_eq!(vault.set_contract_params(valid), Ok(()));
+    assert!(vault.get_pending_contract_params_update().is_some());
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        vault.cancel_contract_params_update(),
+        Err(Error::NotGovernance)
+    );
+
+    set_caller(accounts.alice);
+    assert_eq!(vault.cancel_contract_params_update(), Ok(()));
+    assert!(vault.get_pending_contract_params_update().is_none());
+    assert_eq!(
+        vault.execute_contract_params_update(),
+        Err(Error::NoPendingContractParamsUpdate)
+    );
 }
 
 #[ink::test]
@@ -535,6 +609,7 @@ fn interest_uses_hourly_discrete_compounding() {
     };
 
     set_caller(accounts.alice);
+    set_time(0);
     assert_eq!(
         vault_contract.set_contract_params(VaultContractParamsConfig {
             collateral_ratio: 200,
@@ -547,6 +622,8 @@ fn interest_uses_hourly_discrete_compounding() {
         }),
         Ok(())
     );
+    set_time(CONTRACT_PARAMS_TIMELOCK_MS);
+    assert_eq!(vault_contract.execute_contract_params_update(), Ok(()));
 
     set_time(30 * 24 * MILLISECONDS_PER_HOUR);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
