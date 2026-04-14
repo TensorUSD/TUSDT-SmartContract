@@ -2,6 +2,10 @@ use super::vault::*;
 use tusdt_oracle::PriceData;
 use tusdt_primitives::{Ratio, MILLISECONDS_PER_HOUR};
 
+fn opening_collateral(extra: u64) -> u64 {
+    MIN_VAULT_OPENING_COLLATERAL + extra
+}
+
 fn set_caller(caller: ink::primitives::AccountId) {
     let callee = ink::env::account_id::<tusdt_env::CustomEnvironment>();
     ink::env::test::set_callee::<tusdt_env::CustomEnvironment>(callee);
@@ -16,7 +20,16 @@ fn set_transferred_value(value: u64) {
     ink::env::test::set_value_transferred::<ink::env::DefaultEnvironment>(u128::from(value));
 }
 
+fn fund_caller_for_transfer(value: u64) {
+    let caller = ink::env::caller::<tusdt_env::CustomEnvironment>();
+    let current_balance =
+        ink::env::test::get_account_balance::<ink::env::DefaultEnvironment>(caller).unwrap_or(0);
+    let required_balance = current_balance.saturating_add(u128::from(value));
+    ink::env::test::set_account_balance::<ink::env::DefaultEnvironment>(caller, required_balance);
+}
+
 fn transfer_in(value: u64) {
+    fund_caller_for_transfer(value);
     ink::env::test::transfer_in::<ink::env::DefaultEnvironment>(u128::from(value));
 }
 
@@ -36,13 +49,18 @@ fn create_vault_with_collateral(
 fn create_vault_tracks_ids_balances_and_counts() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
+    let alice_collateral_0 = opening_collateral(500);
+    let alice_collateral_1 = opening_collateral(700);
+    let bob_collateral_0 = opening_collateral(300);
 
     set_time(10);
-    let alice_vault_0 = create_vault_with_collateral(&mut vault, accounts.alice, 500);
+    let alice_vault_0 =
+        create_vault_with_collateral(&mut vault, accounts.alice, alice_collateral_0);
     set_time(20);
-    let alice_vault_1 = create_vault_with_collateral(&mut vault, accounts.alice, 700);
+    let alice_vault_1 =
+        create_vault_with_collateral(&mut vault, accounts.alice, alice_collateral_1);
     set_time(30);
-    let bob_vault_0 = create_vault_with_collateral(&mut vault, accounts.bob, 300);
+    let bob_vault_0 = create_vault_with_collateral(&mut vault, accounts.bob, bob_collateral_0);
 
     assert_eq!(alice_vault_0, 0);
     assert_eq!(alice_vault_1, 1);
@@ -50,7 +68,10 @@ fn create_vault_tracks_ids_balances_and_counts() {
     assert_eq!(vault.get_vaults_count(accounts.alice), 2);
     assert_eq!(vault.get_vaults_count(accounts.bob), 1);
     assert_eq!(vault.get_total_vaults_count(), 3);
-    assert_eq!(vault.get_total_collateral_balance(), 1_500);
+    assert_eq!(
+        vault.get_total_collateral_balance(),
+        alice_collateral_0 + alice_collateral_1 + bob_collateral_0
+    );
     assert_eq!(vault.get_total_debt(accounts.alice), 0);
     assert_eq!(vault.get_total_debt(accounts.bob), 0);
 
@@ -58,7 +79,7 @@ fn create_vault_tracks_ids_balances_and_counts() {
         .get_vault(accounts.alice, 0)
         .expect("alice vault 0 should exist");
     assert_eq!(alice_v0.owner, accounts.alice);
-    assert_eq!(alice_v0.collateral_balance, 500);
+    assert_eq!(alice_v0.collateral_balance, alice_collateral_0);
     assert_eq!(alice_v0.borrowed_token_balance, 0);
     assert_eq!(alice_v0.total_interest_accrued, 0);
     assert_eq!(alice_v0.created_at, 10);
@@ -67,7 +88,7 @@ fn create_vault_tracks_ids_balances_and_counts() {
     let bob_v0 = vault
         .get_vault(accounts.bob, 0)
         .expect("bob vault 0 should exist");
-    assert_eq!(bob_v0.collateral_balance, 300);
+    assert_eq!(bob_v0.collateral_balance, bob_collateral_0);
     assert_eq!(bob_v0.created_at, 30);
 }
 
@@ -75,8 +96,9 @@ fn create_vault_tracks_ids_balances_and_counts() {
 fn add_collateral_updates_vault_and_total_collateral() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
+    let initial_collateral = opening_collateral(400);
 
-    create_vault_with_collateral(&mut vault, accounts.alice, 400);
+    create_vault_with_collateral(&mut vault, accounts.alice, initial_collateral);
 
     set_caller(accounts.alice);
     transfer_in(250);
@@ -85,8 +107,24 @@ fn add_collateral_updates_vault_and_total_collateral() {
     let updated = vault
         .get_vault(accounts.alice, 0)
         .expect("vault should exist after add_collateral");
-    assert_eq!(updated.collateral_balance, 650);
-    assert_eq!(vault.get_total_collateral_balance(), 650);
+    assert_eq!(updated.collateral_balance, initial_collateral + 250);
+    assert_eq!(
+        vault.get_total_collateral_balance(),
+        initial_collateral + 250
+    );
+}
+
+#[ink::test]
+fn create_vault_rejects_collateral_below_minimum() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    set_caller(accounts.alice);
+    transfer_in(MIN_VAULT_OPENING_COLLATERAL - 1);
+    assert_eq!(vault.create_vault(), Err(Error::InsufficientCollateral));
+    assert_eq!(vault.get_vaults_count(accounts.alice), 0);
+    assert_eq!(vault.get_total_vaults_count(), 0);
+    assert_eq!(vault.get_total_collateral_balance(), 0);
 }
 
 #[ink::test]
@@ -98,7 +136,7 @@ fn add_collateral_fails_for_missing_or_liquidating_vault() {
     set_transferred_value(10);
     assert_eq!(vault.add_collateral(0), Err(Error::VaultNotFound));
 
-    create_vault_with_collateral(&mut vault, accounts.alice, 200);
+    create_vault_with_collateral(&mut vault, accounts.alice, opening_collateral(200));
     vault.set_liquidation_auction_for_test(accounts.alice, 0, 42);
 
     set_caller(accounts.alice);
@@ -110,12 +148,13 @@ fn add_collateral_fails_for_missing_or_liquidating_vault() {
 fn release_collateral_checks_balance_before_oracle_path() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
+    let collateral = opening_collateral(150);
 
-    create_vault_with_collateral(&mut vault, accounts.alice, 150);
+    create_vault_with_collateral(&mut vault, accounts.alice, collateral);
 
     set_caller(accounts.alice);
     assert_eq!(
-        vault.release_collateral(0, 151),
+        vault.release_collateral(0, collateral + 1),
         Err(Error::InsufficientCollateral)
     );
 }
@@ -361,7 +400,8 @@ fn paused_contract_rejects_mutations() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
-    let vault_id = create_vault_with_collateral(&mut vault, accounts.alice, 400);
+    let vault_id =
+        create_vault_with_collateral(&mut vault, accounts.alice, opening_collateral(400));
 
     set_caller(accounts.alice);
     assert_eq!(vault.pause(), Ok(()));
@@ -391,7 +431,8 @@ fn paused_contract_still_allows_liquidation_settlement_path() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
-    let vault_id = create_vault_with_collateral(&mut vault, accounts.alice, 400);
+    let vault_id =
+        create_vault_with_collateral(&mut vault, accounts.alice, opening_collateral(400));
 
     set_caller(accounts.alice);
     assert_eq!(vault.pause(), Ok(()));
@@ -484,7 +525,7 @@ fn pagination_for_owner_and_global_vaults_works() {
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     for _ in 0..12 {
-        create_vault_with_collateral(&mut vault, accounts.alice, 1);
+        create_vault_with_collateral(&mut vault, accounts.alice, MIN_VAULT_OPENING_COLLATERAL);
     }
 
     let owner_page_0 = vault
@@ -551,7 +592,11 @@ fn zero_amount_borrow_charges_current_hour() {
     let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
 
     set_time(0);
-    let vault_id = create_vault_with_collateral(&mut vault_contract, accounts.alice, 1_000);
+    let vault_id = create_vault_with_collateral(
+        &mut vault_contract,
+        accounts.alice,
+        opening_collateral(1_000),
+    );
 
     let mut stored_vault = vault_contract
         .get_vault(accounts.alice, vault_id)
@@ -707,7 +752,11 @@ fn accrue_interest_message_updates_stored_vault_balance() {
     let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
 
     set_time(0);
-    let vault_id = create_vault_with_collateral(&mut vault_contract, accounts.alice, 1_000);
+    let vault_id = create_vault_with_collateral(
+        &mut vault_contract,
+        accounts.alice,
+        opening_collateral(1_000),
+    );
 
     let mut stored_vault = vault_contract
         .get_vault(accounts.alice, vault_id)
@@ -754,9 +803,12 @@ fn total_debt_tracks_sum_of_owner_vault_debts() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
 
-    let alice_vault_0 = create_vault_with_collateral(&mut vault_contract, accounts.alice, 400);
-    let alice_vault_1 = create_vault_with_collateral(&mut vault_contract, accounts.alice, 500);
-    let bob_vault_0 = create_vault_with_collateral(&mut vault_contract, accounts.bob, 300);
+    let alice_vault_0 =
+        create_vault_with_collateral(&mut vault_contract, accounts.alice, opening_collateral(400));
+    let alice_vault_1 =
+        create_vault_with_collateral(&mut vault_contract, accounts.alice, opening_collateral(500));
+    let bob_vault_0 =
+        create_vault_with_collateral(&mut vault_contract, accounts.bob, opening_collateral(300));
 
     let mut alice_first = vault_contract
         .get_vault(accounts.alice, alice_vault_0)

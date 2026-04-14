@@ -13,6 +13,7 @@ mod vault {
     use tusdt_primitives::Ratio;
 
     const PAGE_SIZE: u32 = 10;
+    pub(crate) const MIN_VAULT_OPENING_COLLATERAL: Balance = 5_000_000;
     pub(crate) const CONTRACT_PARAMS_TIMELOCK_MS: u64 = 24 * 60 * 60 * 1_000;
 
     mod params {
@@ -413,6 +414,9 @@ mod vault {
 
             let caller = self.env().caller();
             let amount = self.env().transferred_value();
+            if amount < MIN_VAULT_OPENING_COLLATERAL {
+                return Err(Error::InsufficientCollateral);
+            }
             let timestamp = self.env().block_timestamp();
 
             let vault_id = self.vault_count.get(caller).unwrap_or(0);
