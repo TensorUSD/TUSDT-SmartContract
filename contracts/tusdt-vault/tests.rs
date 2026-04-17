@@ -81,6 +81,7 @@ fn create_vault_tracks_ids_balances_and_counts() {
     assert_eq!(alice_v0.owner, accounts.alice);
     assert_eq!(alice_v0.collateral_balance, alice_collateral_0);
     assert_eq!(alice_v0.borrowed_token_balance, 0);
+    assert_eq!(alice_v0.debt_balance, 0);
     assert_eq!(alice_v0.total_interest_accrued, 0);
     assert_eq!(alice_v0.created_at, 10);
     assert_eq!(alice_v0.last_interest_accrued_at, 10);
@@ -334,6 +335,29 @@ fn governance_can_be_updated_by_current_governance() {
 }
 
 #[ink::test]
+fn platform_can_be_updated_by_governance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    assert_eq!(vault.platform(), accounts.alice);
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        vault.update_platform(accounts.charlie),
+        Err(Error::NotGovernance)
+    );
+    assert_eq!(vault.platform(), accounts.alice);
+
+    set_caller(accounts.alice);
+    assert_eq!(vault.update_platform(accounts.charlie), Ok(()));
+    assert_eq!(vault.platform(), accounts.charlie);
+
+    assert_eq!(vault.update_governance(accounts.bob), Ok(()));
+    assert_eq!(vault.governance(), accounts.bob);
+    assert_eq!(vault.platform(), accounts.charlie);
+}
+
+#[ink::test]
 fn governance_can_cancel_pending_contract_params_update() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
@@ -567,6 +591,7 @@ fn interest_accrues_at_beginning_of_hour() {
         owner: accounts.alice,
         collateral_balance: 1_000,
         borrowed_token_balance: 1_000_000,
+        debt_balance: 1_000_000,
         total_interest_accrued: 0,
         created_at: 0,
         last_interest_accrued_at: 0,
@@ -574,11 +599,9 @@ fn interest_accrues_at_beginning_of_hour() {
 
     set_time(MILLISECONDS_PER_HOUR / 2);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
-    assert!(vault.borrowed_token_balance > 1_000_000);
-    assert_eq!(
-        vault.total_interest_accrued,
-        vault.borrowed_token_balance - 1_000_000
-    );
+    assert_eq!(vault.borrowed_token_balance, 1_000_000);
+    assert!(vault.debt_balance > 1_000_000);
+    assert_eq!(vault.total_interest_accrued, vault.debt_balance - 1_000_000);
     assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_HOUR);
 
     set_time(MILLISECONDS_PER_HOUR);
@@ -602,6 +625,7 @@ fn zero_amount_borrow_charges_current_hour() {
         .get_vault(accounts.alice, vault_id)
         .expect("vault should exist");
     stored_vault.borrowed_token_balance = 1_000_000;
+    stored_vault.debt_balance = 1_000_000;
     stored_vault.last_interest_accrued_at = 0;
     assert_eq!(
         vault_contract.save_vault(accounts.alice, vault_id, &stored_vault),
@@ -615,7 +639,8 @@ fn zero_amount_borrow_charges_current_hour() {
     let after_zero_borrow = vault_contract
         .get_vault(accounts.alice, vault_id)
         .expect("vault should still exist");
-    assert!(after_zero_borrow.borrowed_token_balance > 1_000_000);
+    assert_eq!(after_zero_borrow.borrowed_token_balance, 1_000_000);
+    assert!(after_zero_borrow.debt_balance > 1_000_000);
     assert_eq!(
         after_zero_borrow.last_interest_accrued_at,
         MILLISECONDS_PER_HOUR
@@ -625,7 +650,7 @@ fn zero_amount_borrow_charges_current_hour() {
     let accrued_balance = vault_contract
         .accrue_interest(accounts.alice, vault_id)
         .expect("interest accrual should succeed");
-    assert!(accrued_balance > after_zero_borrow.borrowed_token_balance);
+    assert!(accrued_balance > after_zero_borrow.debt_balance);
 
     let accrued_vault = vault_contract
         .get_vault(accounts.alice, vault_id)
@@ -645,6 +670,7 @@ fn new_borrow_reweights_timestamp_toward_now() {
         owner: accounts.alice,
         collateral_balance: 1_000,
         borrowed_token_balance: 1_000_000,
+        debt_balance: 1_000_000,
         total_interest_accrued: 0,
         created_at: 0,
         last_interest_accrued_at: MILLISECONDS_PER_HOUR,
@@ -661,9 +687,11 @@ fn new_borrow_reweights_timestamp_toward_now() {
     );
 
     vault.borrowed_token_balance = 2_000_000;
+    vault.debt_balance = 2_000_000;
     set_time((3 * MILLISECONDS_PER_HOUR) / 4);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
     assert_eq!(vault.borrowed_token_balance, 2_000_000);
+    assert_eq!(vault.debt_balance, 2_000_000);
     assert_eq!(
         vault.last_interest_accrued_at,
         (3 * MILLISECONDS_PER_HOUR) / 4
@@ -671,7 +699,8 @@ fn new_borrow_reweights_timestamp_toward_now() {
 
     set_time((3 * MILLISECONDS_PER_HOUR) / 4 + 1);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
-    assert!(vault.borrowed_token_balance > 2_000_000);
+    assert_eq!(vault.borrowed_token_balance, 2_000_000);
+    assert!(vault.debt_balance > 2_000_000);
     assert_eq!(
         vault.last_interest_accrued_at,
         (7 * MILLISECONDS_PER_HOUR) / 4
@@ -687,6 +716,7 @@ fn interest_uses_hourly_discrete_compounding() {
         owner: accounts.alice,
         collateral_balance: 1_000,
         borrowed_token_balance: 100_000,
+        debt_balance: 100_000,
         total_interest_accrued: 0,
         created_at: 0,
         last_interest_accrued_at: 0,
@@ -711,7 +741,8 @@ fn interest_uses_hourly_discrete_compounding() {
 
     set_time(30 * 24 * MILLISECONDS_PER_HOUR);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
-    assert_eq!(vault.borrowed_token_balance, 100_826);
+    assert_eq!(vault.borrowed_token_balance, 100_000);
+    assert_eq!(vault.debt_balance, 100_826);
     assert_eq!(vault.total_interest_accrued, 826);
     assert_eq!(
         vault.last_interest_accrued_at,
@@ -728,6 +759,7 @@ fn interest_accrual_saturates_at_balance_max_instead_of_reverting() {
         owner: accounts.alice,
         collateral_balance: 1_000,
         borrowed_token_balance: u64::MAX - 1,
+        debt_balance: u64::MAX - 1,
         total_interest_accrued: 0,
         created_at: 0,
         last_interest_accrued_at: 0,
@@ -735,13 +767,15 @@ fn interest_accrual_saturates_at_balance_max_instead_of_reverting() {
 
     set_time(1);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
-    assert_eq!(vault.borrowed_token_balance, u64::MAX);
+    assert_eq!(vault.borrowed_token_balance, u64::MAX - 1);
+    assert_eq!(vault.debt_balance, u64::MAX);
     assert_eq!(vault.total_interest_accrued, 1);
     assert_eq!(vault.last_interest_accrued_at, MILLISECONDS_PER_HOUR);
 
     set_time(MILLISECONDS_PER_HOUR + 1);
     assert_eq!(vault_contract.accrue_interest_for_vault(&mut vault), Ok(()));
-    assert_eq!(vault.borrowed_token_balance, u64::MAX);
+    assert_eq!(vault.borrowed_token_balance, u64::MAX - 1);
+    assert_eq!(vault.debt_balance, u64::MAX);
     assert_eq!(vault.total_interest_accrued, 1);
     assert_eq!(vault.last_interest_accrued_at, 2 * MILLISECONDS_PER_HOUR);
 }
@@ -762,6 +796,7 @@ fn accrue_interest_message_updates_stored_vault_balance() {
         .get_vault(accounts.alice, vault_id)
         .expect("vault should exist");
     stored_vault.borrowed_token_balance = 100_000;
+    stored_vault.debt_balance = 100_000;
     stored_vault.total_interest_accrued = 0;
     stored_vault.last_interest_accrued_at = 0;
     assert_eq!(
@@ -778,7 +813,8 @@ fn accrue_interest_message_updates_stored_vault_balance() {
     let updated_vault = vault_contract
         .get_vault(accounts.alice, vault_id)
         .expect("vault should still exist");
-    assert_eq!(updated_vault.borrowed_token_balance, 100_412);
+    assert_eq!(updated_vault.borrowed_token_balance, 100_000);
+    assert_eq!(updated_vault.debt_balance, 100_412);
     assert_eq!(updated_vault.total_interest_accrued, 412);
     assert_eq!(vault_contract.get_total_debt(accounts.alice), 100_412);
     assert_eq!(
@@ -814,6 +850,8 @@ fn total_debt_tracks_sum_of_owner_vault_debts() {
         .get_vault(accounts.alice, alice_vault_0)
         .expect("alice vault 0 should exist");
     alice_first.borrowed_token_balance = 125;
+    alice_first.debt_balance = 135;
+    alice_first.total_interest_accrued = 10;
     assert_eq!(
         vault_contract.save_vault(accounts.alice, alice_vault_0, &alice_first),
         Ok(())
@@ -823,6 +861,8 @@ fn total_debt_tracks_sum_of_owner_vault_debts() {
         .get_vault(accounts.alice, alice_vault_1)
         .expect("alice vault 1 should exist");
     alice_second.borrowed_token_balance = 275;
+    alice_second.debt_balance = 300;
+    alice_second.total_interest_accrued = 25;
     assert_eq!(
         vault_contract.save_vault(accounts.alice, alice_vault_1, &alice_second),
         Ok(())
@@ -832,22 +872,80 @@ fn total_debt_tracks_sum_of_owner_vault_debts() {
         .get_vault(accounts.bob, bob_vault_0)
         .expect("bob vault 0 should exist");
     bob_first.borrowed_token_balance = 80;
+    bob_first.debt_balance = 83;
+    bob_first.total_interest_accrued = 3;
     assert_eq!(
         vault_contract.save_vault(accounts.bob, bob_vault_0, &bob_first),
         Ok(())
     );
 
-    assert_eq!(vault_contract.get_total_debt(accounts.alice), 400);
-    assert_eq!(vault_contract.get_total_debt(accounts.bob), 80);
+    assert_eq!(vault_contract.get_total_debt(accounts.alice), 435);
+    assert_eq!(vault_contract.get_total_debt(accounts.bob), 83);
 
     alice_first.borrowed_token_balance = 160;
+    alice_first.debt_balance = 172;
+    alice_first.total_interest_accrued = 22;
     assert_eq!(
         vault_contract.save_vault(accounts.alice, alice_vault_0, &alice_first),
         Ok(())
     );
 
-    assert_eq!(vault_contract.get_total_debt(accounts.alice), 435);
-    assert_eq!(vault_contract.get_total_debt(accounts.bob), 80);
+    assert_eq!(vault_contract.get_total_debt(accounts.alice), 472);
+    assert_eq!(vault_contract.get_total_debt(accounts.bob), 83);
+}
+
+#[ink::test]
+fn debt_payment_routes_interest_before_principal() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = Vault {
+        id: 0,
+        owner: accounts.alice,
+        collateral_balance: 1_000,
+        borrowed_token_balance: 110,
+        debt_balance: 120,
+        total_interest_accrued: 10,
+        created_at: 0,
+        last_interest_accrued_at: 0,
+    };
+
+    let payment = TusdtVault::apply_debt_payment(&mut vault, 6)
+        .expect("partial repayment should be allocated successfully");
+    assert_eq!(payment.principal_payment, 0);
+    assert_eq!(payment.interest_payment, 6);
+    assert_eq!(vault.borrowed_token_balance, 110);
+    assert_eq!(vault.debt_balance, 114);
+    assert_eq!(vault.total_interest_accrued, 10);
+
+    let payment = TusdtVault::apply_debt_payment(&mut vault, 10)
+        .expect("second repayment should cover remaining interest first");
+    assert_eq!(payment.principal_payment, 6);
+    assert_eq!(payment.interest_payment, 4);
+    assert_eq!(vault.borrowed_token_balance, 104);
+    assert_eq!(vault.debt_balance, 104);
+    assert_eq!(vault.total_interest_accrued, 10);
+}
+
+#[ink::test]
+fn debt_payment_rejects_amounts_above_outstanding_debt() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = Vault {
+        id: 0,
+        owner: accounts.alice,
+        collateral_balance: 1_000,
+        borrowed_token_balance: 50,
+        debt_balance: 55,
+        total_interest_accrued: 5,
+        created_at: 0,
+        last_interest_accrued_at: 0,
+    };
+
+    assert_eq!(
+        TusdtVault::apply_debt_payment(&mut vault, 56),
+        Err(Error::RepayAmountTooHigh)
+    );
+    assert_eq!(vault.borrowed_token_balance, 50);
+    assert_eq!(vault.debt_balance, 55);
+    assert_eq!(vault.total_interest_accrued, 5);
 }
 
 #[ink::test]
@@ -861,12 +959,13 @@ fn liquidatable_check_uses_liquidation_ratio_limit() {
         owner: accounts.alice,
         collateral_balance: 120,
         borrowed_token_balance: 100,
+        debt_balance: 100,
         total_interest_accrued: 0,
         created_at: 0,
         last_interest_accrued_at: 0,
     };
     let unsafe_vault = Vault {
-        borrowed_token_balance: 101,
+        debt_balance: 101,
         ..safe_vault.clone()
     };
 

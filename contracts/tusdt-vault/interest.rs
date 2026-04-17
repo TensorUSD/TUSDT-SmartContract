@@ -8,7 +8,7 @@ impl TusdtVault {
         if now <= vault.last_interest_accrued_at {
             return Ok(());
         }
-        if vault.borrowed_token_balance == 0 || self.params.interest_rate.is_zero() {
+        if vault.debt_balance == 0 || self.params.interest_rate.is_zero() {
             vault.last_interest_accrued_at = now;
             return Ok(());
         }
@@ -40,17 +40,17 @@ impl TusdtVault {
             .checked_pow(borrowed_hours)
             .ok_or(Error::ArithmeticError)?;
 
-        let previous_borrowed_balance = vault.borrowed_token_balance;
-        let next_borrowed_balance = compounded_growth_factor
-            .checked_mul_value(u128::from(previous_borrowed_balance))
+        let previous_debt_balance = vault.debt_balance;
+        let next_debt_balance = compounded_growth_factor
+            .checked_mul_value(u128::from(previous_debt_balance))
             .ok_or(Error::ArithmeticError)?;
-        let next_borrowed_balance = core::cmp::min(next_borrowed_balance, u128::from(Balance::MAX));
-        let next_borrowed_balance =
-            Balance::try_from(next_borrowed_balance).map_err(|_| Error::ArithmeticError)?;
-        let interest_accrued = next_borrowed_balance
-            .checked_sub(previous_borrowed_balance)
+        let next_debt_balance = core::cmp::min(next_debt_balance, u128::from(Balance::MAX));
+        let next_debt_balance =
+            Balance::try_from(next_debt_balance).map_err(|_| Error::ArithmeticError)?;
+        let interest_accrued = next_debt_balance
+            .checked_sub(previous_debt_balance)
             .ok_or(Error::ArithmeticError)?;
-        vault.borrowed_token_balance = next_borrowed_balance;
+        vault.debt_balance = next_debt_balance;
         vault.total_interest_accrued = vault
             .total_interest_accrued
             .checked_add(interest_accrued)
@@ -77,17 +77,17 @@ impl TusdtVault {
         vault: &mut Vault,
         amount: Balance,
     ) -> Result<()> {
-        if amount == 0 || vault.borrowed_token_balance == 0 {
+        if amount == 0 || vault.debt_balance == 0 {
             return Ok(());
         }
 
         let now = self.env().block_timestamp();
-        let previous_borrowed_balance = vault.borrowed_token_balance;
-        let projected_borrowed_balance = previous_borrowed_balance
+        let previous_debt_balance = vault.debt_balance;
+        let projected_debt_balance = previous_debt_balance
             .checked_add(amount)
             .ok_or(Error::ArithmeticError)?;
         let weighted_previous = u128::from(vault.last_interest_accrued_at)
-            .checked_mul(u128::from(previous_borrowed_balance))
+            .checked_mul(u128::from(previous_debt_balance))
             .ok_or(Error::ArithmeticError)?
             .checked_add(
                 u128::from(now)
@@ -96,7 +96,7 @@ impl TusdtVault {
             )
             .ok_or(Error::ArithmeticError)?;
         let adjusted_timestamp = weighted_previous
-            .checked_div(u128::from(projected_borrowed_balance))
+            .checked_div(u128::from(projected_debt_balance))
             .ok_or(Error::ArithmeticError)?;
         if adjusted_timestamp > u64::MAX as u128 {
             return Err(Error::ArithmeticError);

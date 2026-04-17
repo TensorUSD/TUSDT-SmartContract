@@ -34,9 +34,9 @@ impl TusdtVault {
         let previous_vault_debt = self
             .vaults
             .get((owner, vault_id))
-            .map(|stored_vault: Vault| stored_vault.borrowed_token_balance)
+            .map(|stored_vault: Vault| stored_vault.debt_balance)
             .unwrap_or_default();
-        self.sync_owner_total_debt(owner, previous_vault_debt, vault.borrowed_token_balance)?;
+        self.sync_owner_total_debt(owner, previous_vault_debt, vault.debt_balance)?;
         self.vaults.insert((owner, vault_id), vault);
         Ok(())
     }

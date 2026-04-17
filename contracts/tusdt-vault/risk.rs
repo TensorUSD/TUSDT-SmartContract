@@ -38,7 +38,7 @@ impl TusdtVault {
 
     pub(crate) fn is_liquidatable(&self, price: Ratio, vault: &Vault) -> Result<bool> {
         let limit = self.liquidation_limit(price, vault.collateral_balance)?;
-        Ok(vault.borrowed_token_balance > limit)
+        Ok(vault.debt_balance > limit)
     }
 
     pub(crate) fn collateral_needed_for_debt(

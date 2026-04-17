@@ -37,6 +37,7 @@ mod vault {
         pub owner: AccountId,
         pub collateral_balance: Balance,
         pub borrowed_token_balance: Balance,
+        pub debt_balance: Balance,
         pub total_interest_accrued: Balance,
         pub created_at: u64,
         pub last_interest_accrued_at: u64,
@@ -79,6 +80,7 @@ mod vault {
     #[ink(storage)]
     pub struct TusdtVault {
         governance: AccountId,
+        platform: AccountId,
         paused: bool,
 
         // Token address of tusdt.
@@ -150,8 +152,8 @@ mod vault {
         owner: AccountId,
         #[ink(topic)]
         vault_id: u32,
-        previous_borrowed_balance: Balance,
-        borrowed_balance: Balance,
+        previous_debt_balance: Balance,
+        debt_balance: Balance,
         accrued_at: u64,
     }
 
@@ -177,6 +179,14 @@ mod vault {
         previous_governance: AccountId,
         #[ink(topic)]
         new_governance: AccountId,
+    }
+
+    #[ink(event)]
+    pub struct VaultPlatformUpdated {
+        #[ink(topic)]
+        previous_platform: AccountId,
+        #[ink(topic)]
+        new_platform: AccountId,
     }
 
     #[ink(event)]
@@ -249,6 +259,12 @@ mod vault {
 
     pub type Result<T> = core::result::Result<T, Error>;
 
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) struct DebtPaymentBreakdown {
+        pub principal_payment: Balance,
+        pub interest_payment: Balance,
+    }
+
     impl TusdtVault {
         /// Initializes the vault contract by instantiating the token and auction contracts with the provided code hashes.
         #[ink(constructor)]
@@ -276,6 +292,7 @@ mod vault {
 
             Self {
                 governance,
+                platform: governance,
                 paused: false,
                 token,
                 auction,
@@ -371,6 +388,21 @@ mod vault {
         }
 
         #[ink(message)]
+        pub fn update_platform(&mut self, new_platform: AccountId) -> Result<()> {
+            self.ensure_governance()?;
+
+            let previous_platform = self.platform;
+            self.platform = new_platform;
+
+            self.env().emit_event(VaultPlatformUpdated {
+                previous_platform,
+                new_platform,
+            });
+
+            Ok(())
+        }
+
+        #[ink(message)]
         pub fn pause(&mut self) -> Result<()> {
             self.ensure_governance()?;
 
@@ -425,6 +457,7 @@ mod vault {
                 owner: caller,
                 collateral_balance: amount,
                 borrowed_token_balance: 0,
+                debt_balance: 0,
                 total_interest_accrued: 0,
                 created_at: timestamp,
                 last_interest_accrued_at: timestamp,
@@ -498,7 +531,11 @@ mod vault {
                 .borrowed_token_balance
                 .checked_add(amount)
                 .ok_or(Error::ArithmeticError)?;
-            if projected_borrowed > max_borrow {
+            let projected_debt = vault
+                .debt_balance
+                .checked_add(amount)
+                .ok_or(Error::ArithmeticError)?;
+            if projected_debt > max_borrow {
                 return Err(Error::CollateralRatioExceeded);
             }
             let projected_total_supply = self
@@ -516,6 +553,7 @@ mod vault {
 
             self.adjust_last_interest_accrued_at_for_new_borrow(&mut vault, amount)?;
             vault.borrowed_token_balance = projected_borrowed;
+            vault.debt_balance = projected_debt;
             self.save_vault(caller, vault_id, &vault)?;
 
             self.env().emit_event(TokensBorrowed {
@@ -527,7 +565,7 @@ mod vault {
             Ok(())
         }
 
-        /// Repays borrowed tokens from a vault, accruing interest and burning the repaid tokens.
+        /// Repays borrowed tokens from a vault, routing accrued interest to the platform and burning only principal.
         #[ink(message)]
         pub fn repay_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             self.ensure_not_paused()?;
@@ -535,18 +573,21 @@ mod vault {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             self.accrue_interest_for_vault(&mut vault)?;
-            if amount > vault.borrowed_token_balance {
+            if amount > vault.debt_balance {
                 return Err(Error::RepayAmountTooHigh);
             }
+
+            let payment = Self::apply_debt_payment(&mut vault, amount)?;
 
             self.token
                 .burn(caller, amount)
                 .map_err(|_| Error::TransferFailed)?;
+            if payment.interest_payment > 0 {
+                self.token
+                    .mint(self.platform, payment.interest_payment)
+                    .map_err(|_| Error::TransferFailed)?;
+            }
 
-            vault.borrowed_token_balance = vault
-                .borrowed_token_balance
-                .checked_sub(amount)
-                .ok_or(Error::ArithmeticError)?;
             self.save_vault(caller, vault_id, &vault)?;
 
             self.env().emit_event(TokensRepaid {
@@ -566,22 +607,22 @@ mod vault {
             self.ensure_not_in_liquidation(owner, vault_id)?;
 
             let mut vault = self.load_vault(owner, vault_id)?;
-            let previous_borrowed_balance = vault.borrowed_token_balance;
+            let previous_debt_balance = vault.debt_balance;
 
             self.accrue_interest_for_vault(&mut vault)?;
-            let borrowed_balance = vault.borrowed_token_balance;
+            let debt_balance = vault.debt_balance;
             let accrued_at = vault.last_interest_accrued_at;
 
             self.save_vault(owner, vault_id, &vault)?;
             self.env().emit_event(InterestAccrued {
                 owner,
                 vault_id,
-                previous_borrowed_balance,
-                borrowed_balance,
+                previous_debt_balance,
+                debt_balance,
                 accrued_at,
             });
 
-            Ok(borrowed_balance)
+            Ok(debt_balance)
         }
 
         /// Releases collateral from a vault while ensuring the remaining collateral maintains the minimum collateral ratio.
@@ -600,11 +641,11 @@ mod vault {
                 .collateral_balance
                 .checked_sub(amount)
                 .ok_or(Error::ArithmeticError)?;
-            if vault.borrowed_token_balance > 0 {
+            if vault.debt_balance > 0 {
                 let price = self.current_collateral_price()?;
                 let max_borrow_after_release =
                     self.max_borrow_allowed(price, projected_collateral)?;
-                if vault.borrowed_token_balance > max_borrow_after_release {
+                if vault.debt_balance > max_borrow_after_release {
                     return Err(Error::CollateralRatioExceeded);
                 }
             }
@@ -650,18 +691,15 @@ mod vault {
                 return Err(Error::NotLiquidatable);
             }
 
-            let collateral_to_auction = self.collateral_to_auction(
-                price,
-                vault.borrowed_token_balance,
-                vault.collateral_balance,
-            )?;
+            let collateral_to_auction =
+                self.collateral_to_auction(price, vault.debt_balance, vault.collateral_balance)?;
             let auction_id = self
                 .auction
                 .create_auction(
                     owner,
                     vault_id,
                     collateral_to_auction,
-                    vault.borrowed_token_balance,
+                    vault.debt_balance,
                     Some(self.params.auction_duration_ms),
                 )
                 .map_err(|_| Error::AuctionContractCallFailed)?;
@@ -679,7 +717,8 @@ mod vault {
             Ok(auction_id)
         }
 
-        /// Settles a finalized liquidation auction, transferring collateral to the winner and clearing vault debt.
+        /// Settles a finalized liquidation auction, transferring collateral to the winner,
+        /// routing accrued interest to the platform, and burning only principal.
         ///
         /// This remains callable while paused so governance can freeze new mutations without
         /// trapping already-finalized auction proceeds in the auction contract.
@@ -713,6 +752,7 @@ mod vault {
             if let Some(winner) = winner {
                 collateral_sold = auction.collateral_balance;
                 debt_cleared = auction.debt_balance;
+                let payment = Self::apply_debt_payment(&mut vault, debt_cleared)?;
 
                 self.auction
                     .transfer_winning_bid(auction_id, self.env().account_id())
@@ -722,8 +762,13 @@ mod vault {
                     return Err(Error::TransferFailed);
                 }
                 self.token
-                    .burn(self.env().account_id(), debt_cleared)
+                    .burn(self.env().account_id(), payment.principal_payment)
                     .map_err(|_| Error::TransferFailed)?;
+                if payment.interest_payment > 0 {
+                    self.token
+                        .transfer(self.platform, payment.interest_payment)
+                        .map_err(|_| Error::TransferFailed)?;
+                }
 
                 vault.collateral_balance = vault
                     .collateral_balance
@@ -733,7 +778,6 @@ mod vault {
                     .total_collateral_balance
                     .checked_sub(collateral_sold)
                     .ok_or(Error::ArithmeticError)?;
-                vault.borrowed_token_balance = 0;
             }
 
             self.save_vault(owner, vault_id, &vault)?;
@@ -780,6 +824,12 @@ mod vault {
         #[ink(message)]
         pub fn governance(&self) -> AccountId {
             self.governance
+        }
+
+        /// Returns the current platform account.
+        #[ink(message)]
+        pub fn platform(&self) -> AccountId {
+            self.platform
         }
 
         /// Returns whether the contract is paused by governance.
@@ -952,6 +1002,42 @@ mod vault {
             Ok(())
         }
 
+        pub(crate) fn apply_debt_payment(
+            vault: &mut Vault,
+            payment_amount: Balance,
+        ) -> Result<DebtPaymentBreakdown> {
+            if payment_amount > vault.debt_balance {
+                return Err(Error::RepayAmountTooHigh);
+            }
+
+            let outstanding_interest = Self::outstanding_interest(vault)?;
+            let interest_payment = core::cmp::min(payment_amount, outstanding_interest);
+            let principal_payment = payment_amount
+                .checked_sub(interest_payment)
+                .ok_or(Error::ArithmeticError)?;
+
+            vault.debt_balance = vault
+                .debt_balance
+                .checked_sub(payment_amount)
+                .ok_or(Error::ArithmeticError)?;
+            vault.borrowed_token_balance = vault
+                .borrowed_token_balance
+                .checked_sub(principal_payment)
+                .ok_or(Error::ArithmeticError)?;
+
+            Ok(DebtPaymentBreakdown {
+                principal_payment,
+                interest_payment,
+            })
+        }
+
+        pub(crate) fn outstanding_interest(vault: &Vault) -> Result<Balance> {
+            vault
+                .debt_balance
+                .checked_sub(vault.borrowed_token_balance)
+                .ok_or(Error::ArithmeticError)
+        }
+
         #[inline]
         fn ensure_governance(&self) -> Result<()> {
             if self.env().caller() != self.governance {
@@ -994,6 +1080,7 @@ mod vault {
 
             Self {
                 governance,
+                platform: governance,
                 paused: false,
                 token: TusdtErc20Ref::from_account_id(accounts.charlie),
                 auction: TusdtAuctionRef::from_account_id(accounts.django),
