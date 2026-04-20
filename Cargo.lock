@@ -6973,6 +6973,7 @@ dependencies = [
  "ink_e2e",
  "tusdt-env",
  "tusdt-erc20",
+ "tusdt-primitives",
 ]
 
 [[package]]

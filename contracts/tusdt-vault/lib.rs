@@ -713,6 +713,7 @@ mod vault {
                     vault_id,
                     collateral_to_auction,
                     vault.debt_balance,
+                    price,
                     Some(self.params.auction_duration_ms),
                 )
                 .map_err(|_| Error::AuctionContractCallFailed)?;

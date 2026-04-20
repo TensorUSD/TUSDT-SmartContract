@@ -8,6 +8,7 @@ mod auction {
     use ink::{env::call::FromAccountId, prelude::vec::Vec, storage::Mapping};
 
     use tusdt_erc20::TusdtErc20Ref;
+    use tusdt_primitives::Ratio;
 
     const PAGE_SIZE: u32 = 10;
     const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
@@ -23,6 +24,7 @@ mod auction {
 
         pub collateral_balance: Balance,
         pub debt_balance: Balance,
+        pub liquidation_price: Ratio,
 
         pub starts_at: u64,
         pub ends_at: u64,
@@ -200,6 +202,7 @@ mod auction {
             vault_id: u32,
             collateral_balance: Balance,
             debt_balance: Balance,
+            liquidation_price: Ratio,
             duration_ms: Option<u64>,
         ) -> Result<u32> {
             self.ensure_controller()?;
@@ -232,6 +235,7 @@ mod auction {
                 vault_id,
                 collateral_balance,
                 debt_balance,
+                liquidation_price,
                 starts_at: now,
                 ends_at,
                 highest_bidder: None,
