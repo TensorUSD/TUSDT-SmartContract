@@ -52,6 +52,7 @@ mod vault {
         pub interest_rate: Ratio,
         pub liquidation_fee: Ratio,
         pub borrow_cap: Balance,
+        pub transaction_fee: Balance,
         pub auction_duration_ms: u64,
         pub max_oracle_age_ms: u64,
     }
@@ -65,6 +66,7 @@ mod vault {
         pub interest_rate: u32,
         pub liquidation_fee: u32,
         pub borrow_cap: Balance,
+        pub transaction_fee: Balance,
         pub auction_duration_ms: u64,
         pub max_oracle_age_ms: u64,
     }
@@ -233,6 +235,7 @@ mod vault {
         InsufficientCollateral,
         NotVaultOwner,
         TransferFailed,
+        InvalidTransactionFee,
         TokenBorrowedNotZero,
         InvalidRatio,
         InvalidAuctionDuration,
@@ -509,8 +512,9 @@ mod vault {
             Ok(())
         }
 
-        /// Borrows tokens against the vault's collateral, validating collateral ratio and accruing interest.
-        #[ink(message)]
+        /// Borrows tokens against the vault's collateral, validating collateral ratio,
+        /// accruing interest, and charging the native mint transaction fee.
+        #[ink(message, payable)]
         pub fn borrow_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             self.ensure_not_paused()?;
 
@@ -523,6 +527,7 @@ mod vault {
                 self.save_vault(caller, vault_id, &vault)?;
                 return Ok(());
             }
+            self.ensure_transaction_fee_paid(self.params.transaction_fee)?;
 
             let price = self.current_collateral_price()?;
 
@@ -555,6 +560,7 @@ mod vault {
             vault.borrowed_token_balance = projected_borrowed;
             vault.debt_balance = projected_debt;
             self.save_vault(caller, vault_id, &vault)?;
+            self.transfer_transaction_fee_to_platform(self.params.transaction_fee)?;
 
             self.env().emit_event(TokensBorrowed {
                 owner: caller,
@@ -565,17 +571,23 @@ mod vault {
             Ok(())
         }
 
-        /// Repays borrowed tokens from a vault, routing accrued interest to the platform and burning only principal.
-        #[ink(message)]
+        /// Repays borrowed tokens from a vault, routing accrued interest to the platform,
+        /// burning only principal, and charging the native burn transaction fee.
+        #[ink(message, payable)]
         pub fn repay_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             self.ensure_not_paused()?;
 
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
 
             self.accrue_interest_for_vault(&mut vault)?;
+            if amount.eq(&0) {
+                self.save_vault(caller, vault_id, &vault)?;
+                return Ok(());
+            }
             if amount > vault.debt_balance {
                 return Err(Error::RepayAmountTooHigh);
             }
+            self.ensure_transaction_fee_paid(self.params.transaction_fee)?;
 
             let payment = Self::apply_debt_payment(&mut vault, amount)?;
 
@@ -589,6 +601,7 @@ mod vault {
             }
 
             self.save_vault(caller, vault_id, &vault)?;
+            self.transfer_transaction_fee_to_platform(self.params.transaction_fee)?;
 
             self.env().emit_event(TokensRepaid {
                 owner: caller,
@@ -1036,6 +1049,25 @@ mod vault {
                 .debt_balance
                 .checked_sub(vault.borrowed_token_balance)
                 .ok_or(Error::ArithmeticError)
+        }
+
+        #[inline]
+        pub(crate) fn ensure_transaction_fee_paid(&self, required_fee: Balance) -> Result<()> {
+            if self.env().transferred_value() != required_fee {
+                return Err(Error::InvalidTransactionFee);
+            }
+            Ok(())
+        }
+
+        #[inline]
+        pub(crate) fn transfer_transaction_fee_to_platform(&mut self, fee: Balance) -> Result<()> {
+            if fee == 0 {
+                return Ok(());
+            }
+            if self.env().transfer(self.platform, fee).is_err() {
+                return Err(Error::TransferFailed);
+            }
+            Ok(())
         }
 
         #[inline]
