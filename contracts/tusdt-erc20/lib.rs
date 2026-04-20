@@ -38,6 +38,7 @@ mod tusdt {
         InsufficientBalance,
         InsufficientAllowance,
         NotController,
+        ArithmeticError,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
@@ -122,12 +123,12 @@ mod tusdt {
             self.total_supply = self
                 .total_supply
                 .checked_add(value)
-                .expect("mint overflow on total_supply");
+                .ok_or(Error::ArithmeticError)?;
             self.balances.insert(
                 to,
                 &to_balance
                     .checked_add(value)
-                    .expect("mint overflow on balance"),
+                    .ok_or(Error::ArithmeticError)?,
             );
 
             self.env().emit_event(Transfer {
@@ -153,7 +154,7 @@ mod tusdt {
             self.total_supply = self
                 .total_supply
                 .checked_sub(value)
-                .expect("burn underflow on total_supply");
+                .ok_or(Error::ArithmeticError)?;
 
             self.env().emit_event(Transfer {
                 from: Some(from),
@@ -229,7 +230,7 @@ mod tusdt {
             self.balances.insert(from, &(from_balance - value));
             let to_balance = self.balance_of_impl(to);
             self.balances
-                .insert(to, &(to_balance.checked_add(value).unwrap()));
+                .insert(to, &to_balance.checked_add(value).ok_or(Error::ArithmeticError)?);
             self.env().emit_event(Transfer {
                 from: Some(*from),
                 to: Some(*to),

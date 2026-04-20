@@ -26,10 +26,10 @@ cargo check
 Build contract artifacts (`.contract`, `.wasm`, metadata):
 
 ```bash
-cargo contract build --manifest-path contracts/tusdt-erc20/Cargo.toml
-cargo contract build --manifest-path contracts/tusdt-auction/Cargo.toml
-cargo contract build --manifest-path contracts/tusdt-oracle/Cargo.toml
-cargo contract build --manifest-path contracts/tusdt-vault/Cargo.toml
+cargo contract build --manifest-path contracts/tusdt-erc20/Cargo.toml --release
+cargo contract build --manifest-path contracts/tusdt-auction/Cargo.toml --release
+cargo contract build --manifest-path contracts/tusdt-oracle/Cargo.toml --release
+cargo contract build --manifest-path contracts/tusdt-vault/Cargo.toml --release
 ```
 
 Artifacts are produced in `target/ink/`.
@@ -123,7 +123,9 @@ The current e2e test suite is intentionally oracle-only, and the only deployment
 ### 2) Interest model
 
 - Accrual is hour-based.
-- Growth model uses discrete hourly compounding from the configured annual interest rate.
+- The configured `interest_rate` is an APR-style annual rate, not a simple yearly charge.
+- Growth model uses discrete hourly compounding from that annual rate.
+- At the default `5%` APR, the effective annualized cost is approximately `5.13%` APY under hourly compounding.
 - Implementation compounds by elapsed full hours and advances `last_interest_accrued_at` to the last fully accrued hour.
 
 ### 3) Liquidation flow
@@ -150,7 +152,7 @@ Default params:
 
 - Collateral ratio: `150%`
 - Liquidation ratio: `120%`
-- Interest rate: `5%`
+- Interest rate: `5% APR` (approximately `5.13% APY` under hourly compounding)
 - Liquidation fee: `1%`
 - Auction duration: `3_600_000` milliseconds
 - Max oracle age: `3_600_000` milliseconds
