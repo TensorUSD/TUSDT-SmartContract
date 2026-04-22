@@ -5,7 +5,7 @@ const DEFAULT_LIQUIDATION_RATIO_PERCENT: u32 = 120;
 const DEFAULT_INTEREST_RATE_PERCENT: u32 = 5;
 const DEFAULT_LIQUIDATION_FEE_PERCENT: u32 = 1;
 const DEFAULT_BORROW_CAP: Balance = 100_000_000_000_000_000; // 100 Million
-const DEFAULT_TRANSACTION_FEE: Balance = 0;
+const DEFAULT_TRANSACTION_FEE_PERCENT: u32 = 0;
 const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
 const DEFAULT_MAX_ORACLE_AGE_MS: u64 = 3_600_000;
 const MAX_AUCTION_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
@@ -18,7 +18,7 @@ impl TusdtVault {
             interest_rate: Ratio::from_percentage(DEFAULT_INTEREST_RATE_PERCENT),
             liquidation_fee: Ratio::from_percentage(DEFAULT_LIQUIDATION_FEE_PERCENT),
             borrow_cap: DEFAULT_BORROW_CAP,
-            transaction_fee: DEFAULT_TRANSACTION_FEE,
+            transaction_fee: Ratio::from_percentage(DEFAULT_TRANSACTION_FEE_PERCENT),
             auction_duration_ms: DEFAULT_AUCTION_DURATION_MS,
             max_oracle_age_ms: DEFAULT_MAX_ORACLE_AGE_MS,
         };
@@ -36,7 +36,7 @@ impl TusdtVault {
             interest_rate: Ratio::from_percentage(params.interest_rate),
             liquidation_fee: Ratio::from_percentage(params.liquidation_fee),
             borrow_cap: params.borrow_cap,
-            transaction_fee: params.transaction_fee,
+            transaction_fee: Ratio::from_percentage(params.transaction_fee),
             auction_duration_ms: params.auction_duration_ms,
             max_oracle_age_ms: params.max_oracle_age_ms,
         };
@@ -65,7 +65,10 @@ impl TusdtVault {
                 .to_percentage()
                 .expect("stored liquidation fee should fit in u32 percentage"),
             borrow_cap: params.borrow_cap,
-            transaction_fee: params.transaction_fee,
+            transaction_fee: params
+                .transaction_fee
+                .to_percentage()
+                .expect("stored transaction fee should fit in u32 percentage"),
             auction_duration_ms: params.auction_duration_ms,
             max_oracle_age_ms: params.max_oracle_age_ms,
         }
@@ -91,6 +94,10 @@ impl TusdtVault {
         }
         // Liquidation fee should be less than or equal to 100%.
         if params.liquidation_fee > one {
+            return Err(Error::InvalidRatio);
+        }
+        // Transaction fee should be less than or equal to 100%.
+        if params.transaction_fee > one {
             return Err(Error::InvalidRatio);
         }
         // Auction duration should be at least a minute.

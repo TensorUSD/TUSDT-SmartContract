@@ -52,7 +52,7 @@ mod vault {
         pub interest_rate: Ratio,
         pub liquidation_fee: Ratio,
         pub borrow_cap: Balance,
-        pub transaction_fee: Balance,
+        pub transaction_fee: Ratio,
         pub auction_duration_ms: u64,
         pub max_oracle_age_ms: u64,
     }
@@ -66,7 +66,7 @@ mod vault {
         pub interest_rate: u32,
         pub liquidation_fee: u32,
         pub borrow_cap: Balance,
-        pub transaction_fee: Balance,
+        pub transaction_fee: u32,
         pub auction_duration_ms: u64,
         pub max_oracle_age_ms: u64,
     }
@@ -137,6 +137,7 @@ mod vault {
         #[ink(topic)]
         vault_id: u32,
         amount: Balance,
+        transaction_fee: Balance,
     }
 
     #[ink(event)]
@@ -146,6 +147,7 @@ mod vault {
         #[ink(topic)]
         vault_id: u32,
         amount: Balance,
+        transaction_fee: Balance,
     }
 
     #[ink(event)]
@@ -225,6 +227,7 @@ mod vault {
         winner: Option<AccountId>,
         winning_bid: Balance,
         collateral_sold: Balance,
+        transaction_fee: Balance,
         debt_cleared: Balance,
     }
 
@@ -235,6 +238,7 @@ mod vault {
         InsufficientCollateral,
         NotVaultOwner,
         TransferFailed,
+        InsufficientTokenBalance,
         InvalidTransactionFee,
         TokenBorrowedNotZero,
         InvalidRatio,
@@ -513,8 +517,9 @@ mod vault {
         }
 
         /// Borrows tokens against the vault's collateral, validating collateral ratio,
-        /// accruing interest, and charging the native mint transaction fee.
-        #[ink(message, payable)]
+        /// accruing interest, minting the fee portion to the platform, and sending
+        /// the net borrowed tokens to the caller.
+        #[ink(message)]
         pub fn borrow_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             self.ensure_not_paused()?;
 
@@ -527,7 +532,8 @@ mod vault {
                 self.save_vault(caller, vault_id, &vault)?;
                 return Ok(());
             }
-            self.ensure_transaction_fee_paid(self.params.transaction_fee)?;
+            let fee = self.calculate_transaction_fee(amount)?;
+            let net_borrow_amount = amount.checked_sub(fee).ok_or(Error::ArithmeticError)?;
 
             let price = self.current_collateral_price()?;
 
@@ -552,28 +558,35 @@ mod vault {
                 return Err(Error::BorrowCapExceeded);
             }
 
-            self.token
-                .mint(caller, amount)
-                .map_err(|_| Error::TransferFailed)?;
+            if net_borrow_amount > 0 {
+                self.token
+                    .mint(caller, net_borrow_amount)
+                    .map_err(|_| Error::TransferFailed)?;
+            }
+            if fee > 0 {
+                self.token
+                    .mint(self.platform, fee)
+                    .map_err(|_| Error::TransferFailed)?;
+            }
 
             self.adjust_last_interest_accrued_at_for_new_borrow(&mut vault, amount)?;
             vault.borrowed_token_balance = projected_borrowed;
             vault.debt_balance = projected_debt;
             self.save_vault(caller, vault_id, &vault)?;
-            self.transfer_transaction_fee_to_platform(self.params.transaction_fee)?;
 
             self.env().emit_event(TokensBorrowed {
                 owner: caller,
                 vault_id,
                 amount,
+                transaction_fee: fee,
             });
 
             Ok(())
         }
 
-        /// Repays borrowed tokens from a vault, routing accrued interest to the platform,
-        /// burning only principal, and charging the native burn transaction fee.
-        #[ink(message, payable)]
+        /// Repays borrowed tokens from a vault, charging the transaction fee in TUSDT,
+        /// routing accrued interest and the fee to the platform, and burning only principal net supply.
+        #[ink(message)]
         pub fn repay_token(&mut self, vault_id: u32, amount: Balance) -> Result<()> {
             self.ensure_not_paused()?;
 
@@ -587,26 +600,32 @@ mod vault {
             if amount > vault.debt_balance {
                 return Err(Error::RepayAmountTooHigh);
             }
-            self.ensure_transaction_fee_paid(self.params.transaction_fee)?;
+            let fee = self.calculate_transaction_fee(amount)?;
+            let total_token_charge = amount.checked_add(fee).ok_or(Error::ArithmeticError)?;
+            self.ensure_token_balance_at_least(caller, total_token_charge)?;
 
             let payment = Self::apply_debt_payment(&mut vault, amount)?;
 
             self.token
-                .burn(caller, amount)
+                .burn(caller, total_token_charge)
                 .map_err(|_| Error::TransferFailed)?;
-            if payment.interest_payment > 0 {
+            let platform_mint = payment
+                .interest_payment
+                .checked_add(fee)
+                .ok_or(Error::ArithmeticError)?;
+            if platform_mint > 0 {
                 self.token
-                    .mint(self.platform, payment.interest_payment)
+                    .mint(self.platform, platform_mint)
                     .map_err(|_| Error::TransferFailed)?;
             }
 
             self.save_vault(caller, vault_id, &vault)?;
-            self.transfer_transaction_fee_to_platform(self.params.transaction_fee)?;
 
             self.env().emit_event(TokensRepaid {
                 owner: caller,
                 vault_id,
                 amount,
+                transaction_fee: fee,
             });
 
             Ok(())
@@ -761,6 +780,7 @@ mod vault {
 
             let mut vault = self.load_vault(owner, vault_id)?;
             let mut collateral_sold = 0;
+            let mut transaction_fee = 0;
             let mut debt_cleared = 0;
 
             if let Some(winner) = winner {
@@ -772,7 +792,16 @@ mod vault {
                     .transfer_winning_bid(auction_id, self.env().account_id())
                     .map_err(|_| Error::AuctionContractCallFailed)?;
 
-                if collateral_sold > 0 && self.env().transfer(winner, collateral_sold).is_err() {
+                transaction_fee = self.calculate_transaction_fee(collateral_sold)?;
+                let winner_collateral = collateral_sold
+                    .checked_sub(transaction_fee)
+                    .ok_or(Error::ArithmeticError)?;
+
+                if transaction_fee > 0 {
+                    self.transfer_transaction_fee_to_platform(transaction_fee)?;
+                }
+                if winner_collateral > 0 && self.env().transfer(winner, winner_collateral).is_err()
+                {
                     return Err(Error::TransferFailed);
                 }
                 self.token
@@ -804,6 +833,7 @@ mod vault {
                 winner,
                 winning_bid,
                 collateral_sold,
+                transaction_fee,
                 debt_cleared,
             });
 
@@ -1052,10 +1082,22 @@ mod vault {
                 .ok_or(Error::ArithmeticError)
         }
 
+        pub(crate) fn calculate_transaction_fee(&self, amount: Balance) -> Result<Balance> {
+            self.params
+                .transaction_fee
+                .checked_mul_value(amount.into())
+                .and_then(|fee| Balance::try_from(fee).ok())
+                .ok_or(Error::ArithmeticError)
+        }
+
         #[inline]
-        pub(crate) fn ensure_transaction_fee_paid(&self, required_fee: Balance) -> Result<()> {
-            if self.env().transferred_value() != required_fee {
-                return Err(Error::InvalidTransactionFee);
+        pub(crate) fn ensure_token_balance_at_least(
+            &self,
+            owner: AccountId,
+            required_balance: Balance,
+        ) -> Result<()> {
+            if self.token.balance_of(owner) < required_balance {
+                return Err(Error::InsufficientTokenBalance);
             }
             Ok(())
         }

@@ -218,6 +218,13 @@ fn set_contract_params_enforces_governance_and_validation() {
     );
     assert_eq!(
         vault.set_contract_params(VaultContractParamsConfig {
+            transaction_fee: 101,
+            ..valid
+        }),
+        Err(Error::InvalidRatio)
+    );
+    assert_eq!(
+        vault.set_contract_params(VaultContractParamsConfig {
             collateral_ratio: 130,
             ..valid
         }),
@@ -628,19 +635,18 @@ fn zero_amount_borrow_charges_current_hour() {
 }
 
 #[ink::test]
-fn transaction_fee_helpers_enforce_exact_payment_rules() {
+fn transaction_fee_helpers_use_percentage_math() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     set_caller(accounts.alice);
-    set_transferred_value(25);
-    assert_eq!(vault.ensure_transaction_fee_paid(25), Ok(()));
+    set_time(0);
+    assert_eq!(vault.set_contract_params(test_contract_params()), Ok(()));
+    set_time(CONTRACT_PARAMS_TIMELOCK_MS);
+    assert_eq!(vault.execute_contract_params_update(), Ok(()));
 
-    set_transferred_value(24);
-    assert_eq!(
-        vault.ensure_transaction_fee_paid(25),
-        Err(Error::InvalidTransactionFee)
-    );
+    assert_eq!(vault.calculate_transaction_fee(1_000), Ok(250));
+    assert_eq!(vault.calculate_transaction_fee(3), Ok(0));
 
     assert_eq!(vault.transfer_transaction_fee_to_platform(0), Ok(()));
 }
@@ -669,7 +675,7 @@ fn zero_amount_repay_skips_transaction_fee_check() {
     );
 
     set_caller(accounts.alice);
-    transfer_in(1);
+    set_transferred_value(0);
     assert_eq!(vault_contract.repay_token(vault_id, 0), Ok(()));
 }
 

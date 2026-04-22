@@ -174,7 +174,11 @@ mod tusdt {
 
         /// Increases a spender's allowance by a specified amount.
         #[ink(message)]
-        pub fn increase_allowance(&mut self, spender: AccountId, delta_value: Balance) -> Result<()> {
+        pub fn increase_allowance(
+            &mut self,
+            spender: AccountId,
+            delta_value: Balance,
+        ) -> Result<()> {
             let owner = self.env().caller();
             let allowance = self.allowance_impl(&owner, &spender);
             let updated_allowance = allowance.saturating_add(delta_value);
@@ -184,7 +188,11 @@ mod tusdt {
 
         /// Decreases a spender's allowance by a specified amount.
         #[ink(message)]
-        pub fn decrease_allowance(&mut self, spender: AccountId, delta_value: Balance) -> Result<()> {
+        pub fn decrease_allowance(
+            &mut self,
+            spender: AccountId,
+            delta_value: Balance,
+        ) -> Result<()> {
             let owner = self.env().caller();
             let allowance = self.allowance_impl(&owner, &spender);
             let updated_allowance = allowance
@@ -229,8 +237,12 @@ mod tusdt {
             #[allow(clippy::arithmetic_side_effects)]
             self.balances.insert(from, &(from_balance - value));
             let to_balance = self.balance_of_impl(to);
-            self.balances
-                .insert(to, &to_balance.checked_add(value).ok_or(Error::ArithmeticError)?);
+            self.balances.insert(
+                to,
+                &to_balance
+                    .checked_add(value)
+                    .ok_or(Error::ArithmeticError)?,
+            );
             self.env().emit_event(Transfer {
                 from: Some(*from),
                 to: Some(*to),
