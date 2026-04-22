@@ -1,11 +1,11 @@
 use super::*;
 
-const DEFAULT_COLLATERAL_RATIO_PERCENT: u32 = 150;
-const DEFAULT_LIQUIDATION_RATIO_PERCENT: u32 = 120;
-const DEFAULT_INTEREST_RATE_PERCENT: u32 = 5;
-const DEFAULT_LIQUIDATION_FEE_PERCENT: u32 = 1;
+const DEFAULT_COLLATERAL_RATIO_BASIS_POINTS: u32 = 15_000;
+const DEFAULT_LIQUIDATION_RATIO_BASIS_POINTS: u32 = 12_000;
+const DEFAULT_INTEREST_RATE_BASIS_POINTS: u32 = 500;
+const DEFAULT_LIQUIDATION_FEE_BASIS_POINTS: u32 = 100;
 const DEFAULT_BORROW_CAP: Balance = 100_000_000_000_000_000; // 100 Million
-const DEFAULT_TRANSACTION_FEE_PERCENT: u32 = 0;
+const DEFAULT_TRANSACTION_FEE_BASIS_POINTS: u32 = 3;
 const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
 const DEFAULT_MAX_ORACLE_AGE_MS: u64 = 3_600_000;
 const MAX_AUCTION_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
@@ -13,12 +13,12 @@ const MAX_AUCTION_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 impl TusdtVault {
     pub(crate) fn default_contract_params() -> VaultContractParams {
         let params = VaultContractParams {
-            collateral_ratio: Ratio::from_percentage(DEFAULT_COLLATERAL_RATIO_PERCENT),
-            liquidation_ratio: Ratio::from_percentage(DEFAULT_LIQUIDATION_RATIO_PERCENT),
-            interest_rate: Ratio::from_percentage(DEFAULT_INTEREST_RATE_PERCENT),
-            liquidation_fee: Ratio::from_percentage(DEFAULT_LIQUIDATION_FEE_PERCENT),
+            collateral_ratio: Ratio::from_basis_points(DEFAULT_COLLATERAL_RATIO_BASIS_POINTS),
+            liquidation_ratio: Ratio::from_basis_points(DEFAULT_LIQUIDATION_RATIO_BASIS_POINTS),
+            interest_rate: Ratio::from_basis_points(DEFAULT_INTEREST_RATE_BASIS_POINTS),
+            liquidation_fee: Ratio::from_basis_points(DEFAULT_LIQUIDATION_FEE_BASIS_POINTS),
             borrow_cap: DEFAULT_BORROW_CAP,
-            transaction_fee: Ratio::from_percentage(DEFAULT_TRANSACTION_FEE_PERCENT),
+            transaction_fee: Ratio::from_basis_points(DEFAULT_TRANSACTION_FEE_BASIS_POINTS),
             auction_duration_ms: DEFAULT_AUCTION_DURATION_MS,
             max_oracle_age_ms: DEFAULT_MAX_ORACLE_AGE_MS,
         };
@@ -31,12 +31,12 @@ impl TusdtVault {
         params: VaultContractParamsConfig,
     ) -> Result<VaultContractParams> {
         let config = VaultContractParams {
-            collateral_ratio: Ratio::from_percentage(params.collateral_ratio),
-            liquidation_ratio: Ratio::from_percentage(params.liquidation_ratio),
-            interest_rate: Ratio::from_percentage(params.interest_rate),
-            liquidation_fee: Ratio::from_percentage(params.liquidation_fee),
+            collateral_ratio: Ratio::from_basis_points(params.collateral_ratio),
+            liquidation_ratio: Ratio::from_basis_points(params.liquidation_ratio),
+            interest_rate: Ratio::from_basis_points(params.interest_rate),
+            liquidation_fee: Ratio::from_basis_points(params.liquidation_fee),
             borrow_cap: params.borrow_cap,
-            transaction_fee: Ratio::from_percentage(params.transaction_fee),
+            transaction_fee: Ratio::from_basis_points(params.transaction_fee),
             auction_duration_ms: params.auction_duration_ms,
             max_oracle_age_ms: params.max_oracle_age_ms,
         };
@@ -50,25 +50,25 @@ impl TusdtVault {
         VaultContractParamsConfig {
             collateral_ratio: params
                 .collateral_ratio
-                .to_percentage()
-                .expect("stored collateral ratio should fit in u32 percentage"),
+                .to_basis_points()
+                .expect("stored collateral ratio should fit in u32 basis points"),
             liquidation_ratio: params
                 .liquidation_ratio
-                .to_percentage()
-                .expect("stored liquidation ratio should fit in u32 percentage"),
+                .to_basis_points()
+                .expect("stored liquidation ratio should fit in u32 basis points"),
             interest_rate: params
                 .interest_rate
-                .to_percentage()
-                .expect("stored interest rate should fit in u32 percentage"),
+                .to_basis_points()
+                .expect("stored interest rate should fit in u32 basis points"),
             liquidation_fee: params
                 .liquidation_fee
-                .to_percentage()
-                .expect("stored liquidation fee should fit in u32 percentage"),
+                .to_basis_points()
+                .expect("stored liquidation fee should fit in u32 basis points"),
             borrow_cap: params.borrow_cap,
             transaction_fee: params
                 .transaction_fee
-                .to_percentage()
-                .expect("stored transaction fee should fit in u32 percentage"),
+                .to_basis_points()
+                .expect("stored transaction fee should fit in u32 basis points"),
             auction_duration_ms: params.auction_duration_ms,
             max_oracle_age_ms: params.max_oracle_age_ms,
         }

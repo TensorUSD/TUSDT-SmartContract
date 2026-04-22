@@ -13,6 +13,8 @@ pub const MILLISECONDS_PER_DAY: u64 = SECONDS_PER_DAY * MILLISECONDS_PER_SECOND;
 pub const DAYS_PER_YEAR: u128 = 365;
 pub const HOURS_PER_YEAR: u128 = DAYS_PER_YEAR * HOURS_PER_DAY as u128;
 const FIXED_SCALE: u128 = <FixedU128 as FixedPointNumber>::DIV;
+const PERCENT_DENOMINATOR: u128 = 100;
+const BASIS_POINTS_DENOMINATOR: u128 = 10_000;
 
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,8 +43,17 @@ impl Ratio {
     }
 
     pub fn to_percentage(self) -> Option<u32> {
-        let percent = self.as_fixed().checked_mul_int(100_u128)?;
+        let percent = self.as_fixed().checked_mul_int(PERCENT_DENOMINATOR)?;
         u32::try_from(percent).ok()
+    }
+
+    pub fn from_basis_points(basis_points: u32) -> Self {
+        Self(from_basis_points(basis_points).into_inner())
+    }
+
+    pub fn to_basis_points(self) -> Option<u32> {
+        let basis_points = self.as_fixed().checked_mul_int(BASIS_POINTS_DENOMINATOR)?;
+        u32::try_from(basis_points).ok()
     }
 
     pub const fn into_inner(self) -> u128 {
@@ -91,7 +102,11 @@ impl Ratio {
 }
 
 pub fn from_percentage(percent: u32) -> FixedU128 {
-    FixedU128::saturating_from_rational(percent as u128, 100_u128)
+    FixedU128::saturating_from_rational(percent as u128, PERCENT_DENOMINATOR)
+}
+
+pub fn from_basis_points(basis_points: u32) -> FixedU128 {
+    FixedU128::saturating_from_rational(basis_points as u128, BASIS_POINTS_DENOMINATOR)
 }
 
 // e ^ exponent with Taylor series.

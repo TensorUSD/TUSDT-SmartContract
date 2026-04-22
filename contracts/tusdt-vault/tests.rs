@@ -50,12 +50,12 @@ fn create_vault_with_collateral(
 
 fn test_contract_params() -> VaultContractParamsConfig {
     VaultContractParamsConfig {
-        collateral_ratio: 200,
-        liquidation_ratio: 130,
-        interest_rate: 7,
-        liquidation_fee: 2,
+        collateral_ratio: 20_000,
+        liquidation_ratio: 13_000,
+        interest_rate: 700,
+        liquidation_fee: 200,
         borrow_cap: 1_000_000,
-        transaction_fee: 25,
+        transaction_fee: 3,
         auction_duration_ms: 120_000,
         max_oracle_age_ms: 600_000,
     }
@@ -190,7 +190,7 @@ fn set_contract_params_enforces_governance_and_validation() {
     set_caller(accounts.alice);
     assert_eq!(
         vault.set_contract_params(VaultContractParamsConfig {
-            collateral_ratio: 99,
+            collateral_ratio: 9_900,
             ..valid
         }),
         Err(Error::InvalidRatio)
@@ -218,21 +218,21 @@ fn set_contract_params_enforces_governance_and_validation() {
     );
     assert_eq!(
         vault.set_contract_params(VaultContractParamsConfig {
-            transaction_fee: 101,
+            transaction_fee: 10_001,
             ..valid
         }),
         Err(Error::InvalidRatio)
     );
     assert_eq!(
         vault.set_contract_params(VaultContractParamsConfig {
-            collateral_ratio: 130,
+            collateral_ratio: 13_000,
             ..valid
         }),
         Err(Error::InvalidRatio)
     );
     assert_eq!(
         vault.set_contract_params(VaultContractParamsConfig {
-            collateral_ratio: 120,
+            collateral_ratio: 12_000,
             ..valid
         }),
         Err(Error::InvalidRatio)
@@ -253,12 +253,12 @@ fn set_contract_params_enforces_governance_and_validation() {
     let pending = vault
         .get_pending_contract_params_update()
         .expect("pending params update should be stored");
-    assert_eq!(pending.params.collateral_ratio, 200);
-    assert_eq!(pending.params.liquidation_ratio, 130);
-    assert_eq!(pending.params.interest_rate, 7);
-    assert_eq!(pending.params.liquidation_fee, 2);
+    assert_eq!(pending.params.collateral_ratio, 20_000);
+    assert_eq!(pending.params.liquidation_ratio, 13_000);
+    assert_eq!(pending.params.interest_rate, 700);
+    assert_eq!(pending.params.liquidation_fee, 200);
     assert_eq!(pending.params.borrow_cap, 1_000_000);
-    assert_eq!(pending.params.transaction_fee, 25);
+    assert_eq!(pending.params.transaction_fee, 3);
     assert_eq!(pending.params.auction_duration_ms, 120_000);
     assert_eq!(pending.params.max_oracle_age_ms, 600_000);
 
@@ -273,12 +273,12 @@ fn set_contract_params_enforces_governance_and_validation() {
     assert!(vault.get_pending_contract_params_update().is_none());
 
     let params = vault.get_contract_params();
-    assert_eq!(params.collateral_ratio, 200);
-    assert_eq!(params.liquidation_ratio, 130);
-    assert_eq!(params.interest_rate, 7);
-    assert_eq!(params.liquidation_fee, 2);
+    assert_eq!(params.collateral_ratio, 20_000);
+    assert_eq!(params.liquidation_ratio, 13_000);
+    assert_eq!(params.interest_rate, 700);
+    assert_eq!(params.liquidation_fee, 200);
     assert_eq!(params.borrow_cap, 1_000_000);
-    assert_eq!(params.transaction_fee, 25);
+    assert_eq!(params.transaction_fee, 3);
     assert_eq!(params.auction_duration_ms, 120_000);
     assert_eq!(params.max_oracle_age_ms, 600_000);
 }
@@ -311,7 +311,7 @@ fn governance_can_be_updated_by_current_governance() {
 
     set_time(CONTRACT_PARAMS_TIMELOCK_MS);
     assert_eq!(vault.execute_contract_params_update(), Ok(()));
-    assert_eq!(vault.get_contract_params().collateral_ratio, 200);
+    assert_eq!(vault.get_contract_params().collateral_ratio, 20_000);
 }
 
 #[ink::test]
@@ -645,10 +645,41 @@ fn transaction_fee_helpers_use_percentage_math() {
     set_time(CONTRACT_PARAMS_TIMELOCK_MS);
     assert_eq!(vault.execute_contract_params_update(), Ok(()));
 
-    assert_eq!(vault.calculate_transaction_fee(1_000), Ok(250));
+    assert_eq!(vault.calculate_transaction_fee(10_000), Ok(3));
     assert_eq!(vault.calculate_transaction_fee(3), Ok(0));
 
     assert_eq!(vault.transfer_transaction_fee_to_platform(0), Ok(()));
+}
+
+#[ink::test]
+fn vault_params_support_fractional_percentages() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    let fractional = VaultContractParamsConfig {
+        collateral_ratio: 15_050,
+        liquidation_ratio: 12_025,
+        interest_rate: 75,
+        liquidation_fee: 25,
+        borrow_cap: 1_000_000,
+        transaction_fee: 50,
+        auction_duration_ms: 120_000,
+        max_oracle_age_ms: 600_000,
+    };
+
+    set_caller(accounts.alice);
+    set_time(0);
+    assert_eq!(vault.set_contract_params(fractional), Ok(()));
+    set_time(CONTRACT_PARAMS_TIMELOCK_MS);
+    assert_eq!(vault.execute_contract_params_update(), Ok(()));
+
+    let stored = vault.get_contract_params();
+    assert_eq!(stored.collateral_ratio, 15_050);
+    assert_eq!(stored.liquidation_ratio, 12_025);
+    assert_eq!(stored.interest_rate, 75);
+    assert_eq!(stored.liquidation_fee, 25);
+    assert_eq!(stored.transaction_fee, 50);
+    assert_eq!(vault.calculate_transaction_fee(1_000), Ok(5));
 }
 
 #[ink::test]
@@ -744,7 +775,7 @@ fn interest_uses_hourly_discrete_compounding() {
     set_time(0);
     assert_eq!(
         vault_contract.set_contract_params(VaultContractParamsConfig {
-            interest_rate: 10,
+            interest_rate: 1_000,
             ..test_contract_params()
         }),
         Ok(())

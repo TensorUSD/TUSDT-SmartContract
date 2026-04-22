@@ -60,6 +60,7 @@ mod vault {
     #[derive(Debug, Copy, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
+    /// External config uses basis points for ratio fields, where `100 = 1%`.
     pub struct VaultContractParamsConfig {
         pub collateral_ratio: u32,
         pub liquidation_ratio: u32,
