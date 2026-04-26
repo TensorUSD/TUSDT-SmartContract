@@ -23,6 +23,7 @@ fn create_default_auction(
             vault_id,
             1_000,
             500,
+            550,
             Ratio::from_integer(2),
             Some(1_000),
         )
@@ -67,6 +68,7 @@ fn create_auction_works() {
     assert_eq!(created.vault_id, 7);
     assert_eq!(created.collateral_balance, 1_000);
     assert_eq!(created.debt_balance, 500);
+    assert_eq!(created.min_bid, 550);
     assert_eq!(created.liquidation_price, Ratio::from_integer(2));
     assert_eq!(created.starts_at, 10);
     assert_eq!(created.ends_at, 1_010);
@@ -87,6 +89,7 @@ fn create_auction_fails_for_non_controller() {
             1,
             1_000,
             400,
+            440,
             Ratio::from_integer(2),
             Some(1_000)
         ),
@@ -108,6 +111,7 @@ fn create_auction_fails_if_active_auction_exists_for_vault() {
             1,
             2_000,
             800,
+            880,
             Ratio::from_integer(2),
             Some(1_000)
         ),
@@ -121,7 +125,15 @@ fn create_auction_fails_on_invalid_duration() {
     let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     assert_eq!(
-        auction.create_auction(accounts.bob, 1, 1_000, 400, Ratio::from_integer(2), Some(0)),
+        auction.create_auction(
+            accounts.bob,
+            1,
+            1_000,
+            400,
+            440,
+            Ratio::from_integer(2),
+            Some(0)
+        ),
         Err(Error::InvalidDuration)
     );
     assert_eq!(
@@ -130,6 +142,7 @@ fn create_auction_fails_on_invalid_duration() {
             1,
             1_000,
             400,
+            440,
             Ratio::from_integer(2),
             Some(604_800_001),
         ),
@@ -149,14 +162,14 @@ fn place_bid_fails_when_auction_not_found() {
 }
 
 #[ink::test]
-fn place_bid_fails_when_bid_is_below_debt() {
+fn place_bid_fails_when_bid_is_below_min_bid() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     let mut auction = TusdtAuction::new(accounts.alice, accounts.bob, accounts.charlie);
 
     let auction_id = create_default_auction(&mut auction, accounts.bob, 2);
     assert_eq!(
-        auction.place_bid(auction_id, 499, default_bid_metadata(accounts.django)),
-        Err(Error::BidBelowDebtBalance)
+        auction.place_bid(auction_id, 549, default_bid_metadata(accounts.django)),
+        Err(Error::BidBelowMinBid)
     );
 }
 
@@ -214,6 +227,7 @@ fn late_bid_is_allowed_only_for_admin_when_no_bids_exist() {
         vault_id: 9,
         collateral_balance: 1_000,
         debt_balance: 500,
+        min_bid: 550,
         liquidation_price: Ratio::from_integer(2),
         starts_at: 200,
         ends_at: 1_200,
@@ -245,6 +259,7 @@ fn late_bid_fails_after_end_once_bids_exist() {
         vault_id: 9,
         collateral_balance: 1_000,
         debt_balance: 500,
+        min_bid: 550,
         liquidation_price: Ratio::from_integer(2),
         starts_at: 200,
         ends_at: 1_200,
@@ -384,6 +399,7 @@ fn get_all_auctions_supports_pagination() {
                 vault_id,
                 1_000,
                 500,
+                550,
                 Ratio::from_integer(2),
                 Some(2_000),
             ),

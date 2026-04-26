@@ -24,6 +24,7 @@ mod auction {
 
         pub collateral_balance: Balance,
         pub debt_balance: Balance,
+        pub min_bid: Balance,
         pub liquidation_price: Ratio,
 
         pub starts_at: u64,
@@ -148,7 +149,7 @@ mod auction {
         BidNotFound,
         NotBidder,
         AuctionAlreadyExistsForVault,
-        BidBelowDebtBalance,
+        BidBelowMinBid,
         AuctionEnded,
         AuctionNotEnded,
         AuctionFinalized,
@@ -202,6 +203,7 @@ mod auction {
             vault_id: u32,
             collateral_balance: Balance,
             debt_balance: Balance,
+            min_bid: Balance,
             liquidation_price: Ratio,
             duration_ms: Option<u64>,
         ) -> Result<u32> {
@@ -235,6 +237,7 @@ mod auction {
                 vault_id,
                 collateral_balance,
                 debt_balance,
+                min_bid,
                 liquidation_price,
                 starts_at: now,
                 ends_at,
@@ -337,8 +340,8 @@ mod auction {
             bid_amount: Balance,
             metadata: Option<BidMetadata>,
         ) -> Result<PreparedBid> {
-            if bid_amount < auction.debt_balance {
-                return Err(Error::BidBelowDebtBalance);
+            if bid_amount < auction.min_bid {
+                return Err(Error::BidBelowMinBid);
             }
 
             let existing_bid_id = self.auction_bidder_bids.get((auction_id, bidder));

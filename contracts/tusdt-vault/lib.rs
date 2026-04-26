@@ -724,15 +724,15 @@ mod vault {
                 return Err(Error::NotLiquidatable);
             }
 
-            let collateral_to_auction =
-                self.collateral_to_auction(price, vault.debt_balance, vault.collateral_balance)?;
+            let min_bid = self.liquidation_min_bid(vault.debt_balance)?;
             let auction_id = self
                 .auction
                 .create_auction(
                     owner,
                     vault_id,
-                    collateral_to_auction,
+                    vault.collateral_balance,
                     vault.debt_balance,
+                    min_bid,
                     price,
                     Some(self.params.auction_duration_ms),
                 )
@@ -772,57 +772,52 @@ mod vault {
                 .get_auction(auction_id)
                 .ok_or(Error::AuctionNotFound)?;
 
-            if !auction.is_finalized {
+            if !auction.is_finalized || auction.highest_bidder.is_none() {
                 return Err(Error::AuctionNotFinalized);
             }
 
-            let winner = auction.highest_bidder;
+            let winner = auction
+                .highest_bidder
+                .expect("checked winner presence above");
             let winning_bid = auction.highest_bid;
 
             let mut vault = self.load_vault(owner, vault_id)?;
-            let mut collateral_sold = 0;
-            let mut transaction_fee = 0;
-            let mut debt_cleared = 0;
+            let collateral_sold = auction.collateral_balance;
+            let transaction_fee = self.calculate_transaction_fee(collateral_sold)?;
+            let debt_cleared = auction.debt_balance;
+            let payment = Self::apply_debt_payment(&mut vault, debt_cleared)?;
 
-            if let Some(winner) = winner {
-                collateral_sold = auction.collateral_balance;
-                debt_cleared = auction.debt_balance;
-                let payment = Self::apply_debt_payment(&mut vault, debt_cleared)?;
+            self.auction
+                .transfer_winning_bid(auction_id, self.env().account_id())
+                .map_err(|_| Error::AuctionContractCallFailed)?;
 
-                self.auction
-                    .transfer_winning_bid(auction_id, self.env().account_id())
-                    .map_err(|_| Error::AuctionContractCallFailed)?;
+            let winner_collateral = collateral_sold
+                .checked_sub(transaction_fee)
+                .ok_or(Error::ArithmeticError)?;
 
-                transaction_fee = self.calculate_transaction_fee(collateral_sold)?;
-                let winner_collateral = collateral_sold
-                    .checked_sub(transaction_fee)
-                    .ok_or(Error::ArithmeticError)?;
-
-                if transaction_fee > 0 {
-                    self.transfer_transaction_fee_to_platform(transaction_fee)?;
-                }
-                if winner_collateral > 0 && self.env().transfer(winner, winner_collateral).is_err()
-                {
-                    return Err(Error::TransferFailed);
-                }
-                self.token
-                    .burn(self.env().account_id(), payment.principal_payment)
-                    .map_err(|_| Error::TransferFailed)?;
-                if payment.interest_payment > 0 {
-                    self.token
-                        .transfer(self.platform, payment.interest_payment)
-                        .map_err(|_| Error::TransferFailed)?;
-                }
-
-                vault.collateral_balance = vault
-                    .collateral_balance
-                    .checked_sub(collateral_sold)
-                    .ok_or(Error::ArithmeticError)?;
-                self.total_collateral_balance = self
-                    .total_collateral_balance
-                    .checked_sub(collateral_sold)
-                    .ok_or(Error::ArithmeticError)?;
+            if transaction_fee > 0 {
+                self.transfer_transaction_fee_to_platform(transaction_fee)?;
             }
+            if winner_collateral > 0 && self.env().transfer(winner, winner_collateral).is_err() {
+                return Err(Error::TransferFailed);
+            }
+            self.token
+                .burn(self.env().account_id(), payment.principal_payment)
+                .map_err(|_| Error::TransferFailed)?;
+            if payment.interest_payment > 0 {
+                self.token
+                    .transfer(self.platform, payment.interest_payment)
+                    .map_err(|_| Error::TransferFailed)?;
+            }
+
+            vault.collateral_balance = vault
+                .collateral_balance
+                .checked_sub(collateral_sold)
+                .ok_or(Error::ArithmeticError)?;
+            self.total_collateral_balance = self
+                .total_collateral_balance
+                .checked_sub(collateral_sold)
+                .ok_or(Error::ArithmeticError)?;
 
             self.save_vault(owner, vault_id, &vault)?;
             self.liquidation_auctions.remove((owner, vault_id));
@@ -831,7 +826,7 @@ mod vault {
                 owner,
                 vault_id,
                 auction_id,
-                winner,
+                winner: Some(winner),
                 winning_bid,
                 collateral_sold,
                 transaction_fee,

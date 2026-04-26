@@ -41,44 +41,16 @@ impl TusdtVault {
         Ok(vault.debt_balance > limit)
     }
 
-    pub(crate) fn collateral_needed_for_debt(
-        price: Ratio,
-        debt_balance: Balance,
-    ) -> Result<Balance> {
-        let collateral_balance = price
-            .checked_div_value(u128::from(debt_balance))
-            .ok_or(Error::ArithmeticError)?;
-        Balance::try_from(collateral_balance).map_err(|_| Error::ArithmeticError)
-    }
-
-    pub(crate) fn collateral_to_auction(
-        &self,
-        price: Ratio,
-        debt_balance: Balance,
-        collateral_balance: Balance,
-    ) -> Result<Balance> {
-        let collateral_cap = u128::from(collateral_balance);
-        let collateral_debt = match Self::collateral_needed_for_debt(price, debt_balance) {
-            Ok(collateral_debt) => collateral_debt,
-            Err(Error::ArithmeticError) => return Ok(collateral_balance),
-            Err(error) => return Err(error),
-        };
-        let collateral_debt = u128::from(collateral_debt);
-
-        if collateral_debt >= collateral_cap {
-            return Ok(collateral_balance);
-        }
-
+    pub(crate) fn liquidation_min_bid(&self, debt_balance: Balance) -> Result<Balance> {
         let liquidation_fee = self
             .params
             .liquidation_fee
-            .checked_mul_value(collateral_debt)
+            .checked_mul_value(u128::from(debt_balance))
             .ok_or(Error::ArithmeticError)?;
-        let collateral_to_auction = collateral_debt
+        let min_bid = u128::from(debt_balance)
             .checked_add(liquidation_fee)
-            .ok_or(Error::ArithmeticError)?
-            .min(collateral_cap);
+            .ok_or(Error::ArithmeticError)?;
 
-        Balance::try_from(collateral_to_auction).map_err(|_| Error::ArithmeticError)
+        Balance::try_from(min_bid).map_err(|_| Error::ArithmeticError)
     }
 }
