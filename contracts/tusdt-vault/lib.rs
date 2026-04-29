@@ -232,6 +232,13 @@ mod vault {
         debt_cleared: Balance,
     }
 
+    #[ink(event)]
+    pub struct EmergencyDrained {
+        #[ink(topic)]
+        recipient: AccountId,
+        amount: Balance,
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
@@ -445,6 +452,33 @@ mod vault {
             });
 
             Ok(())
+        }
+
+        /// **TESTNET ONLY** — Drains the entire native balance of the contract to `recipient`.
+        ///
+        /// Use this before migrating to a new contract deployment when storage layout has
+        /// changed and you need to recover all collateral funds locked in this instance.
+        /// `total_collateral_balance` is zeroed so internal accounting stays consistent.
+        /// Only callable by governance.
+        #[ink(message)]
+        pub fn emergency_drain(&mut self, recipient: AccountId) -> Result<Balance> {
+            self.ensure_governance()?;
+
+            let amount = self.env().balance();
+            if amount == 0 {
+                return Ok(0);
+            }
+
+            // Zero out accounting so any stale state cannot be acted on after the drain.
+            self.total_collateral_balance = 0;
+
+            if self.env().transfer(recipient, amount).is_err() {
+                return Err(Error::TransferFailed);
+            }
+
+            self.env().emit_event(EmergencyDrained { recipient, amount });
+
+            Ok(amount)
         }
 
         /// Creates a new vault for the caller with the transferred collateral and returns the vault ID.
