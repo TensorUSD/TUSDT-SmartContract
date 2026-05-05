@@ -256,6 +256,7 @@ mod vault {
         AuctionNotFinalized,
         ArithmeticError,
         NotGovernance,
+        NotGovernanceOrPlatform,
         ContractPaused,
         OracleCallFailed,
         OraclePriceUnavailable,
@@ -412,7 +413,7 @@ mod vault {
 
         #[ink(message)]
         pub fn pause(&mut self) -> Result<()> {
-            self.ensure_governance()?;
+            self.ensure_governance_or_platform()?;
 
             self.paused = true;
             self.env().emit_event(Paused {});
@@ -1113,6 +1114,15 @@ mod vault {
         fn ensure_governance(&self) -> Result<()> {
             if self.env().caller() != self.governance {
                 return Err(Error::NotGovernance);
+            }
+            Ok(())
+        }
+
+        #[inline]
+        fn ensure_governance_or_platform(&self) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.governance && caller != self.platform {
+                return Err(Error::NotGovernanceOrPlatform);
             }
             Ok(())
         }

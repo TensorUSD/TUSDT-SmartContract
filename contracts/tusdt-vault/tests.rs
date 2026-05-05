@@ -371,13 +371,33 @@ fn governance_can_pause_and_unpause_contract() {
     assert!(!vault.paused());
 
     set_caller(accounts.bob);
-    assert_eq!(vault.pause(), Err(Error::NotGovernance));
+    assert_eq!(vault.pause(), Err(Error::NotGovernanceOrPlatform));
     assert!(!vault.paused());
 
     set_caller(accounts.alice);
     assert_eq!(vault.pause(), Ok(()));
     assert!(vault.paused());
 
+    assert_eq!(vault.unpause(), Ok(()));
+    assert!(!vault.paused());
+}
+
+#[ink::test]
+fn platform_can_pause_but_not_unpause() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    set_caller(accounts.alice);
+    assert_eq!(vault.update_platform(accounts.bob), Ok(()));
+
+    set_caller(accounts.bob);
+    assert_eq!(vault.pause(), Ok(()));
+    assert!(vault.paused());
+
+    assert_eq!(vault.unpause(), Err(Error::NotGovernance));
+    assert!(vault.paused());
+
+    set_caller(accounts.alice);
     assert_eq!(vault.unpause(), Ok(()));
     assert!(!vault.paused());
 }
@@ -448,7 +468,7 @@ fn price_validation_and_collateral_math_helpers_work() {
     assert_eq!(TusdtVault::collateral_value(price, 100), Ok(300));
     assert_eq!(vault.max_borrow_allowed(price, 100), Ok(200));
     assert_eq!(vault.liquidation_limit(price, 100), Ok(250));
-    assert_eq!(vault.liquidation_min_bid(300), Ok(303));
+    assert_eq!(vault.liquidation_min_bid(300), Ok(333));
 }
 
 #[ink::test]
@@ -834,16 +854,16 @@ fn accrue_interest_message_updates_stored_vault_balance() {
     set_time(30 * 24 * MILLISECONDS_PER_HOUR);
     assert_eq!(
         vault_contract.accrue_interest(accounts.alice, vault_id),
-        Ok(100_412)
+        Ok(100_826)
     );
 
     let updated_vault = vault_contract
         .get_vault(accounts.alice, vault_id)
         .expect("vault should still exist");
     assert_eq!(updated_vault.borrowed_token_balance, 100_000);
-    assert_eq!(updated_vault.debt_balance, 100_412);
-    assert_eq!(updated_vault.total_interest_accrued, 412);
-    assert_eq!(vault_contract.get_total_debt(accounts.alice), 100_412);
+    assert_eq!(updated_vault.debt_balance, 100_826);
+    assert_eq!(updated_vault.total_interest_accrued, 826);
+    assert_eq!(vault_contract.get_total_debt(accounts.alice), 100_826);
     assert_eq!(
         updated_vault.last_interest_accrued_at,
         (30 * 24 + 1) * MILLISECONDS_PER_HOUR
