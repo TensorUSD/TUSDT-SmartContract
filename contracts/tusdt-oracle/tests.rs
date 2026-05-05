@@ -399,18 +399,16 @@ fn committed_round_history_is_queryable() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
     let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
-    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
 
-    set_caller(accounts.bob);
     set_time(10);
     let round_0 = oracle
-        .commit_round(Some(Ratio::from_integer(11)))
-        .expect("first override commit should succeed");
+        .commit_round_governance(Ratio::from_integer(11))
+        .expect("first governance commit should succeed");
 
     set_time(20);
     let round_1 = oracle
-        .commit_round(Some(Ratio::from_integer(22)))
-        .expect("second override commit should succeed");
+        .commit_round_governance(Ratio::from_integer(22))
+        .expect("second governance commit should succeed");
 
     assert_eq!(oracle.get_round_price(0), Some(round_0));
     assert_eq!(oracle.get_round_price(1), Some(round_1));
@@ -424,14 +422,12 @@ fn committed_round_history_supports_pagination() {
     let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
     set_caller(accounts.alice);
     let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
-    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
 
-    set_caller(accounts.bob);
     for round_id in 0..12_u32 {
         set_time(round_id as u64);
         oracle
-            .commit_round(Some(Ratio::from_integer(round_id as u128 + 1)))
-            .expect("override commit should succeed");
+            .commit_round_governance(Ratio::from_integer(round_id as u128 + 1))
+            .expect("governance commit should succeed");
     }
 
     assert_eq!(oracle.get_price_history_count(), 12);
@@ -516,5 +512,170 @@ fn round_submission_count_is_bounded() {
     assert_eq!(
         oracle.get_round_submissions(0).len(),
         max_submissions as usize
+    );
+}
+
+#[ink::test]
+fn first_commit_skips_deviation_check() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
+
+    set_caller(accounts.bob);
+    assert!(oracle.commit_round(Some(Ratio::from_integer(1_000))).is_ok());
+}
+
+#[ink::test]
+fn validator_commit_within_deviation_succeeds() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
+
+    set_caller(accounts.bob);
+    oracle
+        .commit_round(Some(Ratio::from_integer(100)))
+        .expect("first commit should succeed");
+    // 5% default deviation: 104 is within 95..=105.
+    assert!(oracle.commit_round(Some(Ratio::from_integer(104))).is_ok());
+}
+
+#[ink::test]
+fn validator_commit_outside_deviation_is_rejected() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
+
+    set_caller(accounts.bob);
+    oracle
+        .commit_round(Some(Ratio::from_integer(100)))
+        .expect("first commit should succeed");
+    assert_eq!(
+        oracle.commit_round(Some(Ratio::from_integer(130))),
+        Err(Error::PriceDeviationExceeded)
+    );
+}
+
+#[ink::test]
+fn median_commit_outside_deviation_is_rejected() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_reporter(accounts.bob, true), Ok(()));
+    assert_eq!(oracle.set_reporter(accounts.charlie, true), Ok(()));
+    assert_eq!(oracle.set_reporter(accounts.django, true), Ok(()));
+    assert_eq!(oracle.set_validator(Some(accounts.eve)), Ok(()));
+
+    set_caller(accounts.eve);
+    oracle
+        .commit_round(Some(Ratio::from_integer(100)))
+        .expect("first commit should succeed");
+
+    submit_price(&mut oracle, accounts.bob, 200);
+    submit_price(&mut oracle, accounts.charlie, 210);
+    submit_price(&mut oracle, accounts.django, 220);
+
+    set_caller(accounts.eve);
+    assert_eq!(
+        oracle.commit_round(None),
+        Err(Error::PriceDeviationExceeded)
+    );
+}
+
+#[ink::test]
+fn governance_commit_bypasses_deviation_and_quorum() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
+
+    set_caller(accounts.bob);
+    oracle
+        .commit_round(Some(Ratio::from_integer(100)))
+        .expect("first commit should succeed");
+    assert_eq!(
+        oracle.commit_round(Some(Ratio::from_integer(500))),
+        Err(Error::PriceDeviationExceeded)
+    );
+
+    set_caller(accounts.alice);
+    set_time(42);
+    let committed = oracle
+        .commit_round_governance(Ratio::from_integer(500))
+        .expect("governance commit should bypass deviation");
+    assert_eq!(committed.price, Ratio::from_integer(500));
+    assert!(committed.was_overridden);
+    assert_eq!(committed.committed_at, 42);
+    assert_eq!(oracle.get_latest_price(), Some(committed));
+}
+
+#[ink::test]
+fn governance_commit_rejects_zero_price() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+
+    assert_eq!(
+        oracle.commit_round_governance(Ratio::from_integer(0)),
+        Err(Error::InvalidPrice)
+    );
+}
+
+#[ink::test]
+fn governance_commit_requires_governance_caller() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        oracle.commit_round_governance(Ratio::from_integer(10)),
+        Err(Error::NotGovernance)
+    );
+}
+
+#[ink::test]
+fn governance_can_widen_deviation_threshold() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+    assert_eq!(oracle.set_validator(Some(accounts.bob)), Ok(()));
+
+    set_caller(accounts.bob);
+    oracle
+        .commit_round(Some(Ratio::from_integer(100)))
+        .expect("first commit should succeed");
+    assert_eq!(
+        oracle.commit_round(Some(Ratio::from_integer(130))),
+        Err(Error::PriceDeviationExceeded)
+    );
+
+    set_caller(accounts.alice);
+    // Allow up to 50% deviation.
+    assert_eq!(
+        oracle.set_max_price_deviation(Ratio::from_basis_points(5_000)),
+        Ok(())
+    );
+    assert_eq!(
+        oracle.max_price_deviation(),
+        Ratio::from_basis_points(5_000)
+    );
+
+    set_caller(accounts.bob);
+    assert!(oracle.commit_round(Some(Ratio::from_integer(130))).is_ok());
+}
+
+#[ink::test]
+fn set_max_price_deviation_requires_governance() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    set_caller(accounts.alice);
+    let mut oracle = TusdtOracle::new(accounts.alice, accounts.alice);
+
+    set_caller(accounts.bob);
+    assert_eq!(
+        oracle.set_max_price_deviation(Ratio::from_basis_points(1_000)),
+        Err(Error::NotGovernance)
     );
 }
