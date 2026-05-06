@@ -13,6 +13,7 @@ mod oracle {
     const MIN_REPORTERS: u32 = 3;
     const PAGE_SIZE: u32 = 10;
     const MAX_ROUND_SUBMISSIONS: u32 = 256;
+    const DEFAULT_MAX_PRICE_DEVIATION_BASIS_POINTS: u32 = 2_000;
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
@@ -65,6 +66,7 @@ mod oracle {
         round_reporters: Mapping<(u32, u32), AccountId>,
         committed_round_prices: Mapping<u32, PriceData>,
         latest_price: Option<PriceData>,
+        max_price_deviation: Ratio,
     }
 
     #[ink(event)]
@@ -109,6 +111,11 @@ mod oracle {
         validator: Option<AccountId>,
     }
 
+    #[ink(event)]
+    pub struct MaxPriceDeviationUpdated {
+        max_price_deviation: Ratio,
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
@@ -120,6 +127,7 @@ mod oracle {
         NotEnoughSubmissions,
         MedianUnavailable,
         MaxSubmissionsReached,
+        PriceDeviationExceeded,
         ArithmeticError,
     }
 
@@ -140,6 +148,9 @@ mod oracle {
                 round_reporters: Mapping::default(),
                 committed_round_prices: Mapping::default(),
                 latest_price: None,
+                max_price_deviation: Ratio::from_basis_points(
+                    DEFAULT_MAX_PRICE_DEVIATION_BASIS_POINTS,
+                ),
             }
         }
 
@@ -214,31 +225,28 @@ mod oracle {
                     (median_price, median_price, false)
                 }
             };
-            let price_data = PriceData {
-                round_id,
-                price: committed_price,
-                median_price,
-                reporter_count,
-                committed_at: self.env().block_timestamp(),
-                was_overridden,
-            };
-
-            self.committed_round_prices.insert(round_id, &price_data);
-            self.latest_price = Some(price_data);
-            self.current_round_id = self
-                .current_round_id
-                .checked_add(1)
-                .ok_or(Error::ArithmeticError)?;
-
-            self.env().emit_event(RoundCommitted {
+            self.ensure_within_deviation(committed_price)?;
+            self.finalize_round(
                 round_id,
                 committed_price,
                 median_price,
                 reporter_count,
                 was_overridden,
-            });
+            )
+        }
 
-            Ok(price_data)
+        /// Commits the current round with a governance-supplied price, bypassing quorum and deviation checks.
+        #[ink(message)]
+        pub fn commit_round_governance(&mut self, price: Ratio) -> Result<PriceData> {
+            self.ensure_governance()?;
+            if price.is_zero() {
+                return Err(Error::InvalidPrice);
+            }
+
+            let round_id = self.current_round_id;
+            let reporter_count = self.round_reporter_count.get(round_id).unwrap_or(0);
+            let median_price = self.compute_round_median(round_id)?.unwrap_or(price);
+            self.finalize_round(round_id, price, median_price, reporter_count, true)
         }
 
         /// Enables or disables a reporter account.
@@ -256,6 +264,17 @@ mod oracle {
             self.ensure_governance()?;
             self.validator = validator;
             self.env().emit_event(ValidatorUpdated { validator });
+            Ok(())
+        }
+
+        /// Updates the maximum allowed deviation between consecutive committed prices.
+        #[ink(message)]
+        pub fn set_max_price_deviation(&mut self, max_price_deviation: Ratio) -> Result<()> {
+            self.ensure_governance()?;
+            self.max_price_deviation = max_price_deviation;
+            self.env().emit_event(MaxPriceDeviationUpdated {
+                max_price_deviation,
+            });
             Ok(())
         }
 
@@ -387,6 +406,12 @@ mod oracle {
             MAX_ROUND_SUBMISSIONS
         }
 
+        /// Returns the maximum allowed deviation between consecutive committed prices.
+        #[ink(message)]
+        pub fn max_price_deviation(&self) -> Ratio {
+            self.max_price_deviation
+        }
+
         fn ensure_controller(&self) -> Result<()> {
             if self.env().caller() != self.controller {
                 return Err(Error::NotController);
@@ -410,6 +435,59 @@ mod oracle {
 
         fn latest_committed_round_id(&self) -> Option<u32> {
             self.current_round_id.checked_sub(1)
+        }
+
+        fn ensure_within_deviation(&self, candidate: Ratio) -> Result<()> {
+            let Some(latest) = self.latest_price else {
+                return Ok(());
+            };
+            if latest.price.is_zero() {
+                return Ok(());
+            }
+            let abs_diff = candidate.abs_diff(latest.price);
+            let max_diff = latest
+                .price
+                .checked_mul(self.max_price_deviation)
+                .ok_or(Error::ArithmeticError)?;
+            if abs_diff > max_diff {
+                return Err(Error::PriceDeviationExceeded);
+            }
+            Ok(())
+        }
+
+        fn finalize_round(
+            &mut self,
+            round_id: u32,
+            committed_price: Ratio,
+            median_price: Ratio,
+            reporter_count: u32,
+            was_overridden: bool,
+        ) -> Result<PriceData> {
+            let price_data = PriceData {
+                round_id,
+                price: committed_price,
+                median_price,
+                reporter_count,
+                committed_at: self.env().block_timestamp(),
+                was_overridden,
+            };
+
+            self.committed_round_prices.insert(round_id, &price_data);
+            self.latest_price = Some(price_data);
+            self.current_round_id = self
+                .current_round_id
+                .checked_add(1)
+                .ok_or(Error::ArithmeticError)?;
+
+            self.env().emit_event(RoundCommitted {
+                round_id,
+                committed_price,
+                median_price,
+                reporter_count,
+                was_overridden,
+            });
+
+            Ok(price_data)
         }
 
         fn compute_round_median(&self, round_id: u32) -> Result<Option<Ratio>> {

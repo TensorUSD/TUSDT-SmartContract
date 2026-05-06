@@ -76,6 +76,16 @@ impl Ratio {
         self.as_fixed().checked_mul_int(value)
     }
 
+    pub fn checked_mul(self, rhs: Self) -> Option<Self> {
+        self.as_fixed()
+            .checked_mul(&rhs.as_fixed())
+            .map(Self::from_fixed)
+    }
+
+    pub fn abs_diff(self, other: Self) -> Self {
+        Self(self.0.abs_diff(other.0))
+    }
+
     /// Value / self
     pub fn checked_div_value(self, value: u128) -> Option<u128> {
         let value_fixed = FixedU128::checked_from_integer(value)?;
