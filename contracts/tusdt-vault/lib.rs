@@ -476,7 +476,8 @@ mod vault {
             if self.env().transfer(recipient, amount).is_err() {
                 return Err(Error::TransferFailed);
             }
-
+            self.paused = true;
+            self.env().emit_event(Paused {});
             self.env().emit_event(EmergencyDrained { recipient, amount });
 
             Ok(amount)
