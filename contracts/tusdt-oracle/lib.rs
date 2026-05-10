@@ -252,7 +252,7 @@ mod oracle {
         /// Enables or disables a reporter account.
         #[ink(message)]
         pub fn set_reporter(&mut self, reporter: AccountId, enabled: bool) -> Result<()> {
-            self.ensure_governance()?;
+            self.ensure_validator()?;
             self.reporters.insert(reporter, &enabled);
             self.env().emit_event(ReporterUpdated { reporter, enabled });
             Ok(())
