@@ -53,4 +53,36 @@ impl TusdtVault {
 
         Balance::try_from(min_bid).map_err(|_| Error::ArithmeticError)
     }
+
+    /// Validates a collateral addition (create or top-up) against min, per-vault cap, and global cap.
+    /// Returns the projected (vault_balance, total_balance) the caller must commit on success.
+    pub(crate) fn ensure_collateral_bounds(
+        &self,
+        vault_current: Balance,
+        addition: Balance,
+    ) -> Result<(Balance, Balance)> {
+        if addition == 0 {
+            return Err(Error::InsufficientCollateral);
+        }
+
+        let projected_vault = vault_current
+            .checked_add(addition)
+            .ok_or(Error::ArithmeticError)?;
+        if projected_vault < self.params.min_vault_collateral {
+            return Err(Error::InsufficientCollateral);
+        }
+        if projected_vault > self.params.max_vault_collateral {
+            return Err(Error::CollateralCapExceeded);
+        }
+
+        let projected_total = self
+            .total_collateral_balance
+            .checked_add(addition)
+            .ok_or(Error::ArithmeticError)?;
+        if projected_total > self.params.max_total_collateral {
+            return Err(Error::CollateralCapExceeded);
+        }
+
+        Ok((projected_vault, projected_total))
+    }
 }

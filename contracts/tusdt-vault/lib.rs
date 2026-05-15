@@ -13,7 +13,6 @@ mod vault {
     use tusdt_primitives::Ratio;
 
     const PAGE_SIZE: u32 = 10;
-    pub(crate) const MIN_VAULT_OPENING_COLLATERAL: Balance = 5_000_000;
     pub(crate) const CONTRACT_PARAMS_TIMELOCK_MS: u64 = 24 * 60 * 60 * 1_000;
 
     mod params {
@@ -54,6 +53,9 @@ mod vault {
         pub interest_rate: Ratio,
         pub liquidation_fee: Ratio,
         pub borrow_cap: Balance,
+        pub min_vault_collateral: Balance,
+        pub max_vault_collateral: Balance,
+        pub max_total_collateral: Balance,
         pub transaction_fee: Ratio,
         pub auction_duration_ms: u64,
         pub max_oracle_age_ms: u64,
@@ -69,6 +71,9 @@ mod vault {
         pub interest_rate: u32,
         pub liquidation_fee: u32,
         pub borrow_cap: Balance,
+        pub min_vault_collateral: Balance,
+        pub max_vault_collateral: Balance,
+        pub max_total_collateral: Balance,
         pub transaction_fee: u32,
         pub auction_duration_ms: u64,
         pub max_oracle_age_ms: u64,
@@ -267,6 +272,8 @@ mod vault {
         VaultNotFound,
         /// Vault has less collateral than required (or below the minimum opening collateral).
         InsufficientCollateral,
+        /// Per-vault or protocol-wide collateral cap would be exceeded by this operation.
+        CollateralCapExceeded,
         /// Caller is not the owner of the targeted vault.
         NotVaultOwner,
         /// Underlying native or token transfer failed.
@@ -538,9 +545,8 @@ mod vault {
 
             let caller = self.env().caller();
             let amount = self.env().transferred_value();
-            if amount < MIN_VAULT_OPENING_COLLATERAL {
-                return Err(Error::InsufficientCollateral);
-            }
+            let (_, projected_total) = self.ensure_collateral_bounds(0, amount)?;
+
             let timestamp = self.env().block_timestamp();
 
             let vault_id = self.vault_count.get(caller).unwrap_or(0);
@@ -557,10 +563,7 @@ mod vault {
 
             self.save_vault(caller, vault_id, &vault)?;
             self.vault_keys.push(&(caller, vault_id));
-            self.total_collateral_balance = self
-                .total_collateral_balance
-                .checked_add(amount)
-                .ok_or(Error::ArithmeticError)?;
+            self.total_collateral_balance = projected_total;
 
             let next_id = vault_id.checked_add(1).ok_or(Error::ArithmeticError)?;
             self.vault_count.insert(caller, &next_id);
@@ -582,14 +585,11 @@ mod vault {
             let (caller, mut vault) = self.load_caller_vault(vault_id)?;
             let amount = self.env().transferred_value();
 
-            vault.collateral_balance = vault
-                .collateral_balance
-                .checked_add(amount)
-                .ok_or(Error::ArithmeticError)?;
-            self.total_collateral_balance = self
-                .total_collateral_balance
-                .checked_add(amount)
-                .ok_or(Error::ArithmeticError)?;
+            let (projected_vault, projected_total) =
+                self.ensure_collateral_bounds(vault.collateral_balance, amount)?;
+
+            vault.collateral_balance = projected_vault;
+            self.total_collateral_balance = projected_total;
             self.save_vault(caller, vault_id, &vault)?;
 
             self.env().emit_event(CollateralAdded {

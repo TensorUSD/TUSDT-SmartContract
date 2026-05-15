@@ -2,8 +2,12 @@ use super::vault::*;
 use tusdt_oracle::PriceData;
 use tusdt_primitives::{Ratio, MILLISECONDS_PER_HOUR};
 
+const TEST_MIN_VAULT_COLLATERAL: u64 = 5_000_000;
+const TEST_MAX_VAULT_COLLATERAL: u64 = 1_000_000_000;
+const TEST_MAX_TOTAL_COLLATERAL: u64 = 21_000_000_000;
+
 fn opening_collateral(extra: u64) -> u64 {
-    MIN_VAULT_OPENING_COLLATERAL + extra
+    TEST_MIN_VAULT_COLLATERAL + extra
 }
 
 fn set_caller(caller: ink::primitives::AccountId) {
@@ -55,6 +59,9 @@ fn test_contract_params() -> VaultContractParamsConfig {
         interest_rate: 700,
         liquidation_fee: 200,
         borrow_cap: 1_000_000,
+        min_vault_collateral: TEST_MIN_VAULT_COLLATERAL,
+        max_vault_collateral: TEST_MAX_VAULT_COLLATERAL,
+        max_total_collateral: TEST_MAX_TOTAL_COLLATERAL,
         transaction_fee: 3,
         auction_duration_ms: 120_000,
         max_oracle_age_ms: 600_000,
@@ -137,7 +144,7 @@ fn create_vault_rejects_collateral_below_minimum() {
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     set_caller(accounts.alice);
-    transfer_in(MIN_VAULT_OPENING_COLLATERAL - 1);
+    transfer_in(TEST_MIN_VAULT_COLLATERAL - 1);
     assert_eq!(vault.create_vault(), Err(Error::InsufficientCollateral));
     assert_eq!(vault.get_vaults_count(accounts.alice), 0);
     assert_eq!(vault.get_total_vaults_count(), 0);
@@ -524,7 +531,7 @@ fn pagination_for_owner_and_global_vaults_works() {
     let mut vault = TusdtVault::new_for_test(accounts.alice);
 
     for _ in 0..12 {
-        create_vault_with_collateral(&mut vault, accounts.alice, MIN_VAULT_OPENING_COLLATERAL);
+        create_vault_with_collateral(&mut vault, accounts.alice, TEST_MIN_VAULT_COLLATERAL);
     }
 
     let owner_page_0 = vault
@@ -665,6 +672,9 @@ fn vault_params_support_fractional_percentages() {
         interest_rate: 75,
         liquidation_fee: 25,
         borrow_cap: 1_000_000,
+        min_vault_collateral: TEST_MIN_VAULT_COLLATERAL,
+        max_vault_collateral: TEST_MAX_VAULT_COLLATERAL,
+        max_total_collateral: TEST_MAX_TOTAL_COLLATERAL,
         transaction_fee: 50,
         auction_duration_ms: 120_000,
         max_oracle_age_ms: 600_000,
@@ -1023,5 +1033,214 @@ fn liquidatable_check_uses_liquidation_ratio_limit() {
     assert_eq!(
         vault_contract.is_liquidatable(price, &unsafe_vault),
         Ok(true)
+    );
+}
+
+fn install_tight_collateral_bounds(
+    vault: &mut TusdtVault,
+    governance: ink::primitives::AccountId,
+    min_vault: u64,
+    max_vault: u64,
+    max_total: u64,
+) {
+    set_caller(governance);
+    set_time(0);
+    let params = VaultContractParamsConfig {
+        min_vault_collateral: min_vault,
+        max_vault_collateral: max_vault,
+        max_total_collateral: max_total,
+        ..test_contract_params()
+    };
+    assert_eq!(vault.set_contract_params(params), Ok(()));
+    set_time(CONTRACT_PARAMS_TIMELOCK_MS);
+    assert_eq!(vault.execute_contract_params_update(), Ok(()));
+}
+
+#[ink::test]
+fn create_vault_rejects_when_exceeds_max_per_vault() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+    install_tight_collateral_bounds(
+        &mut vault,
+        accounts.alice,
+        TEST_MIN_VAULT_COLLATERAL,
+        10_000_000,
+        100_000_000,
+    );
+
+    set_caller(accounts.alice);
+    transfer_in(10_000_001);
+    assert_eq!(vault.create_vault(), Err(Error::CollateralCapExceeded));
+    assert_eq!(vault.get_total_vaults_count(), 0);
+    assert_eq!(vault.get_total_collateral_balance(), 0);
+}
+
+#[ink::test]
+fn create_vault_rejects_when_exceeds_max_total() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+    install_tight_collateral_bounds(
+        &mut vault,
+        accounts.alice,
+        TEST_MIN_VAULT_COLLATERAL,
+        10_000_000,
+        15_000_000,
+    );
+
+    create_vault_with_collateral(&mut vault, accounts.alice, 10_000_000);
+
+    set_caller(accounts.bob);
+    transfer_in(6_000_000);
+    assert_eq!(vault.create_vault(), Err(Error::CollateralCapExceeded));
+    assert_eq!(vault.get_total_collateral_balance(), 10_000_000);
+}
+
+#[ink::test]
+fn add_collateral_rejects_zero_amount() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    create_vault_with_collateral(&mut vault, accounts.alice, opening_collateral(100));
+
+    set_caller(accounts.alice);
+    set_transferred_value(0);
+    assert_eq!(vault.add_collateral(0), Err(Error::InsufficientCollateral));
+}
+
+#[ink::test]
+fn add_collateral_rejects_below_min_when_post_settlement_dust() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
+
+    let vault_id =
+        create_vault_with_collateral(&mut vault_contract, accounts.alice, opening_collateral(100));
+
+    let mut stored_vault = vault_contract
+        .get_vault(accounts.alice, vault_id)
+        .expect("vault should exist");
+    stored_vault.collateral_balance = 100;
+    assert_eq!(
+        vault_contract.save_vault(accounts.alice, vault_id, &stored_vault),
+        Ok(())
+    );
+
+    set_caller(accounts.alice);
+    transfer_in(50);
+    assert_eq!(
+        vault_contract.add_collateral(vault_id),
+        Err(Error::InsufficientCollateral)
+    );
+}
+
+#[ink::test]
+fn add_collateral_rejects_when_exceeds_max_per_vault() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+    install_tight_collateral_bounds(
+        &mut vault,
+        accounts.alice,
+        TEST_MIN_VAULT_COLLATERAL,
+        10_000_000,
+        100_000_000,
+    );
+
+    let vault_id = create_vault_with_collateral(&mut vault, accounts.alice, 9_000_000);
+
+    set_caller(accounts.alice);
+    transfer_in(2_000_000);
+    assert_eq!(
+        vault.add_collateral(vault_id),
+        Err(Error::CollateralCapExceeded)
+    );
+}
+
+#[ink::test]
+fn add_collateral_rejects_when_exceeds_max_total() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+    install_tight_collateral_bounds(
+        &mut vault,
+        accounts.alice,
+        TEST_MIN_VAULT_COLLATERAL,
+        10_000_000,
+        15_000_000,
+    );
+
+    let alice_vault_id = create_vault_with_collateral(&mut vault, accounts.alice, 8_000_000);
+    create_vault_with_collateral(&mut vault, accounts.bob, 6_000_000);
+
+    set_caller(accounts.alice);
+    transfer_in(2_000_000);
+    assert_eq!(
+        vault.add_collateral(alice_vault_id),
+        Err(Error::CollateralCapExceeded)
+    );
+}
+
+#[ink::test]
+fn release_collateral_still_allowed_below_min_when_no_debt() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault_contract = TusdtVault::new_for_test(accounts.alice);
+
+    let collateral = opening_collateral(0);
+    let vault_id =
+        create_vault_with_collateral(&mut vault_contract, accounts.alice, collateral);
+
+    set_caller(accounts.alice);
+    let result = vault_contract.release_collateral(vault_id, collateral - 1);
+    assert_ne!(result, Err(Error::InsufficientCollateral));
+}
+
+#[ink::test]
+fn governance_can_update_collateral_bounds() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+
+    install_tight_collateral_bounds(
+        &mut vault,
+        accounts.alice,
+        7_500_000,
+        50_000_000,
+        500_000_000,
+    );
+
+    let params = vault.get_contract_params();
+    assert_eq!(params.min_vault_collateral, 7_500_000);
+    assert_eq!(params.max_vault_collateral, 50_000_000);
+    assert_eq!(params.max_total_collateral, 500_000_000);
+}
+
+#[ink::test]
+fn validate_contract_params_rejects_inverted_bounds() {
+    let accounts = ink::env::test::default_accounts::<tusdt_env::CustomEnvironment>();
+    let mut vault = TusdtVault::new_for_test(accounts.alice);
+    let valid = test_contract_params();
+
+    set_caller(accounts.alice);
+
+    assert_eq!(
+        vault.set_contract_params(VaultContractParamsConfig {
+            min_vault_collateral: 0,
+            ..valid
+        }),
+        Err(Error::InvalidRatio)
+    );
+
+    assert_eq!(
+        vault.set_contract_params(VaultContractParamsConfig {
+            min_vault_collateral: 10_000_000,
+            max_vault_collateral: 5_000_000,
+            ..valid
+        }),
+        Err(Error::InvalidRatio)
+    );
+
+    assert_eq!(
+        vault.set_contract_params(VaultContractParamsConfig {
+            max_vault_collateral: 100_000_000,
+            max_total_collateral: 50_000_000,
+            ..valid
+        }),
+        Err(Error::InvalidRatio)
     );
 }
