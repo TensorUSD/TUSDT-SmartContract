@@ -29,6 +29,7 @@ mod vault {
         include!("vault_access.rs");
     }
 
+    /// A user's CDP record: collateral held, principal borrowed, accrued debt, and timestamps.
     #[derive(Debug, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -43,6 +44,7 @@ mod vault {
         pub last_interest_accrued_at: u64,
     }
 
+    /// Internal representation of risk and fee parameters used by the vault.
     #[derive(Debug, Copy, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -72,6 +74,7 @@ mod vault {
         pub max_oracle_age_ms: u64,
     }
 
+    /// A queued parameter update awaiting timelock expiry before it can be executed.
     #[derive(Debug, Copy, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -80,6 +83,7 @@ mod vault {
         pub execute_after: u64,
     }
 
+    /// Vault storage: roles, child contract refs, risk params, and all per-owner CDP records.
     #[ink(storage)]
     pub struct TusdtVault {
         governance: AccountId,
@@ -104,6 +108,7 @@ mod vault {
         liquidation_auctions: Mapping<(AccountId, u32), u32>,
     }
 
+    /// Emitted when a new vault is opened with initial collateral.
     #[ink(event)]
     pub struct VaultCreated {
         #[ink(topic)]
@@ -113,6 +118,7 @@ mod vault {
         amount: Balance,
     }
 
+    /// Emitted when collateral is added to an existing vault.
     #[ink(event)]
     pub struct CollateralAdded {
         #[ink(topic)]
@@ -122,6 +128,7 @@ mod vault {
         amount: Balance,
     }
 
+    /// Emitted when collateral is withdrawn from a vault.
     #[ink(event)]
     pub struct CollateralReleased {
         #[ink(topic)]
@@ -131,6 +138,7 @@ mod vault {
         amount: Balance,
     }
 
+    /// Emitted when tUSDT is borrowed against a vault; `amount` is gross, fee is the platform cut.
     #[ink(event)]
     pub struct TokensBorrowed {
         #[ink(topic)]
@@ -141,6 +149,7 @@ mod vault {
         transaction_fee: Balance,
     }
 
+    /// Emitted when borrowed tUSDT is repaid; fee is paid in addition to the principal repayment.
     #[ink(event)]
     pub struct TokensRepaid {
         #[ink(topic)]
@@ -151,6 +160,7 @@ mod vault {
         transaction_fee: Balance,
     }
 
+    /// Emitted when interest is accrued onto a vault's debt balance.
     #[ink(event)]
     pub struct InterestAccrued {
         #[ink(topic)]
@@ -162,22 +172,26 @@ mod vault {
         accrued_at: u64,
     }
 
+    /// Emitted after a scheduled parameter update is executed and becomes active.
     #[ink(event)]
     pub struct ContractParamsUpdated {
         params: VaultContractParamsConfig,
     }
 
+    /// Emitted when a parameter update is queued behind the timelock.
     #[ink(event)]
     pub struct ContractParamsUpdateScheduled {
         params: VaultContractParamsConfig,
         execute_after: u64,
     }
 
+    /// Emitted when a pending parameter update is cancelled by governance.
     #[ink(event)]
     pub struct ContractParamsUpdateCancelled {
         params: VaultContractParamsConfig,
     }
 
+    /// Emitted when governance control is transferred (and propagated to child contracts).
     #[ink(event)]
     pub struct VaultGovernanceUpdated {
         #[ink(topic)]
@@ -186,6 +200,7 @@ mod vault {
         new_governance: AccountId,
     }
 
+    /// Emitted when the platform fee recipient account is updated.
     #[ink(event)]
     pub struct VaultPlatformUpdated {
         #[ink(topic)]
@@ -194,12 +209,15 @@ mod vault {
         new_platform: AccountId,
     }
 
+    /// Emitted when the contract is paused.
     #[ink(event)]
     pub struct Paused {}
 
+    /// Emitted when the contract is unpaused.
     #[ink(event)]
     pub struct Unpaused {}
 
+    /// Emitted when surplus tUSDT held by the vault is claimed to governance.
     #[ink(event)]
     pub struct SurplusTusdtClaimed {
         #[ink(topic)]
@@ -207,6 +225,7 @@ mod vault {
         amount: Balance,
     }
 
+    /// Emitted when a liquidation auction is created for an unsafe vault.
     #[ink(event)]
     pub struct LiquidationAuctionCreated {
         #[ink(topic)]
@@ -217,6 +236,7 @@ mod vault {
         auction_id: u32,
     }
 
+    /// Emitted when a liquidation auction is settled: collateral leaves the vault and debt is cleared.
     #[ink(event)]
     pub struct VaultLiquidated {
         #[ink(topic)]
@@ -232,6 +252,7 @@ mod vault {
         debt_cleared: Balance,
     }
 
+    /// Emitted when the entire native balance of the contract is drained to abandon the vault, for emergency migration to a new deployment; **TESTNET ONLY**.
     #[ink(event)]
     pub struct EmergencyDrained {
         #[ink(topic)]
@@ -239,37 +260,60 @@ mod vault {
         amount: Balance,
     }
 
+    /// Errors returned by the vault contract.
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
         VaultNotFound,
+        /// Vault has less collateral than required (or below the minimum opening collateral).
         InsufficientCollateral,
+        /// Caller is not the owner of the targeted vault.
         NotVaultOwner,
+        /// Underlying native or token transfer failed.
         TransferFailed,
+        /// Caller's tUSDT balance is below the required repayment + fee.
         InsufficientTokenBalance,
         InvalidTransactionFee,
+        /// Operation requires the vault to have zero borrowed principal.
         TokenBorrowedNotZero,
+        /// A ratio parameter was out of range.
         InvalidRatio,
+        /// Auction duration parameter is zero or above the maximum.
         InvalidAuctionDuration,
+        /// Action would push the vault above its collateral ratio.
         CollateralRatioExceeded,
         LiquidationRatioExceeded,
+        /// Action would push protocol-wide debt past the borrow cap.
         BorrowCapExceeded,
+        /// Repayment amount exceeds the current debt balance.
         RepayAmountTooHigh,
+        /// Vault is already mid-liquidation.
         VaultInLiquidation,
+        /// Vault does not meet the criteria to be liquidated.
         NotLiquidatable,
+        /// A liquidation auction already exists for this vault.
         LiquidationAuctionExists,
         AuctionContractCallFailed,
         AuctionNotFound,
+        /// Operation requires the referenced auction to be finalized.
         AuctionNotFinalized,
+        /// Arithmetic overflow or underflow.
         ArithmeticError,
+        /// Caller is not the governance account.
         NotGovernance,
+        /// Caller is neither the governance nor the platform account.
         NotGovernanceOrPlatform,
+        /// Contract is currently paused.
         ContractPaused,
         OracleCallFailed,
+        /// Oracle has no committed price yet.
         OraclePriceUnavailable,
+        /// Latest oracle price is older than `max_oracle_age_ms`.
         OraclePriceStale,
         InvalidOracleMaxAge,
+        /// No parameter update is queued.
         NoPendingContractParamsUpdate,
+        /// Pending parameter update's timelock has not yet elapsed.
         ContractParamsUpdateTimelockActive,
     }
 
@@ -386,6 +430,7 @@ mod vault {
             Ok(())
         }
 
+        /// Transfers vault governance to a new account, propagating the change to the child auction and oracle contracts.
         #[ink(message)]
         pub fn update_governance(&mut self, new_governance: AccountId) -> Result<()> {
             self.ensure_governance()?;
@@ -403,6 +448,7 @@ mod vault {
             Ok(())
         }
 
+        /// Updates the platform fee recipient account; governance-only.
         #[ink(message)]
         pub fn update_platform(&mut self, new_platform: AccountId) -> Result<()> {
             self.ensure_governance()?;
@@ -418,6 +464,7 @@ mod vault {
             Ok(())
         }
 
+        /// Pauses the contract, blocking user-facing mutations; callable by governance or platform.
         #[ink(message)]
         pub fn pause(&mut self) -> Result<()> {
             self.ensure_governance_or_platform()?;
@@ -428,6 +475,7 @@ mod vault {
             Ok(())
         }
 
+        /// Unpauses the contract; governance-only (platform cannot unpause).
         #[ink(message)]
         pub fn unpause(&mut self) -> Result<()> {
             self.ensure_governance()?;
@@ -1035,6 +1083,7 @@ mod vault {
             Ok(vaults)
         }
 
+        /// Verifies an oracle price reading is present, non-zero, and not older than `max_oracle_age_ms`.
         pub(crate) fn validate_price_data(
             price_data: Option<PriceData>,
             now: u64,
@@ -1053,6 +1102,7 @@ mod vault {
             Ok(price_data)
         }
 
+        /// Returns the latest validated collateral price (raw tUSDT units per raw collateral unit) from the oracle.
         pub(crate) fn current_collateral_price(&self) -> Result<Ratio> {
             let price_data = Self::validate_price_data(
                 self.oracle.get_latest_price(),
@@ -1062,6 +1112,7 @@ mod vault {
             Ok(price_data.price)
         }
 
+        /// Updates the per-owner aggregate debt accumulator to reflect a vault's debt moving from one balance to another.
         pub(crate) fn sync_owner_total_debt(
             &mut self,
             owner: AccountId,
@@ -1078,6 +1129,7 @@ mod vault {
             Ok(())
         }
 
+        /// Applies a debt payment, splitting it between outstanding interest (paid first) and principal.
         pub(crate) fn apply_debt_payment(
             vault: &mut Vault,
             payment_amount: Balance,
@@ -1107,6 +1159,7 @@ mod vault {
             })
         }
 
+        /// Returns the unpaid interest on a vault as `debt_balance - borrowed_token_balance`.
         pub(crate) fn outstanding_interest(vault: &Vault) -> Result<Balance> {
             vault
                 .debt_balance
@@ -1114,6 +1167,7 @@ mod vault {
                 .ok_or(Error::ArithmeticError)
         }
 
+        /// Computes the transaction fee for the given amount based on the configured fee ratio.
         pub(crate) fn calculate_transaction_fee(&self, amount: Balance) -> Result<Balance> {
             self.params
                 .transaction_fee
@@ -1122,6 +1176,7 @@ mod vault {
                 .ok_or(Error::ArithmeticError)
         }
 
+        /// Reverts with `InsufficientTokenBalance` if `owner` holds less tUSDT than `required_balance`.
         #[inline]
         pub(crate) fn ensure_token_balance_at_least(
             &self,
@@ -1134,6 +1189,7 @@ mod vault {
             Ok(())
         }
 
+        /// Sends the given native fee amount to the platform account; no-op if `fee == 0`.
         #[inline]
         pub(crate) fn transfer_transaction_fee_to_platform(&mut self, fee: Balance) -> Result<()> {
             if fee == 0 {
@@ -1145,6 +1201,7 @@ mod vault {
             Ok(())
         }
 
+        /// Reverts with `NotGovernance` if caller is not the governance account.
         #[inline]
         fn ensure_governance(&self) -> Result<()> {
             if self.env().caller() != self.governance {
@@ -1153,6 +1210,7 @@ mod vault {
             Ok(())
         }
 
+        /// Reverts with `NotGovernanceOrPlatform` if caller is neither governance nor platform.
         #[inline]
         fn ensure_governance_or_platform(&self) -> Result<()> {
             let caller = self.env().caller();
@@ -1162,6 +1220,7 @@ mod vault {
             Ok(())
         }
 
+        /// Reverts with `ContractPaused` if the contract is currently paused.
         #[inline]
         fn ensure_not_paused(&self) -> Result<()> {
             if self.paused {
@@ -1170,6 +1229,7 @@ mod vault {
             Ok(())
         }
 
+        /// Propagates governance changes to the child auction and oracle contracts.
         #[cfg(not(test))]
         fn sync_child_governance(&mut self, new_governance: AccountId) -> Result<()> {
             self.auction
@@ -1181,6 +1241,7 @@ mod vault {
             Ok(())
         }
 
+        /// Test stub for `sync_child_governance` since child contracts are not instantiated in unit tests.
         #[cfg(test)]
         fn sync_child_governance(&mut self, _new_governance: AccountId) -> Result<()> {
             Ok(())

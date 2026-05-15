@@ -14,6 +14,7 @@ mod auction {
     const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
     const MAX_AUCTION_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
+    /// A liquidation auction selling a vault's collateral to repay its debt.
     #[derive(Debug, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -38,6 +39,7 @@ mod auction {
         pub is_finalized: bool,
     }
 
+    /// A single bidder's offer against an auction; each bidder has at most one bid record per auction.
     #[derive(Debug, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -50,6 +52,7 @@ mod auction {
         pub is_withdrawn: bool,
     }
 
+    /// Optional bidder-supplied metadata attached to a bid (e.g. originating hotkey).
     #[derive(Debug, Clone)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -57,6 +60,7 @@ mod auction {
         pub hot_key: AccountId,
     }
 
+    /// Auction storage: roles, token reference, auctions, bids, and the active-auction index.
     #[ink(storage)]
     pub struct TusdtAuction {
         controller: AccountId,
@@ -75,6 +79,7 @@ mod auction {
         active_auction_indices: Mapping<u32, u32>,
     }
 
+    /// Emitted when a new liquidation auction is created.
     #[ink(event)]
     pub struct AuctionCreated {
         #[ink(topic)]
@@ -87,6 +92,7 @@ mod auction {
         ends_at: u64,
     }
 
+    /// Emitted when a bid is placed or raised on an auction.
     #[ink(event)]
     pub struct BidPlaced {
         #[ink(topic)]
@@ -98,6 +104,7 @@ mod auction {
         amount: Balance,
     }
 
+    /// Emitted when an auction is finalized, identifying the winning bidder.
     #[ink(event)]
     pub struct AuctionFinalized {
         #[ink(topic)]
@@ -109,6 +116,7 @@ mod auction {
         highest_bid_metadata: Option<BidMetadata>,
     }
 
+    /// Emitted when a losing bidder withdraws their refund.
     #[ink(event)]
     pub struct RefundWithdrawn {
         #[ink(topic)]
@@ -116,6 +124,7 @@ mod auction {
         amount: Balance,
     }
 
+    /// Emitted when the winning bid tokens are transferred out by the controller.
     #[ink(event)]
     pub struct WinningBidTransferred {
         #[ink(topic)]
@@ -125,6 +134,7 @@ mod auction {
         amount: Balance,
     }
 
+    /// Emitted when auction governance is transferred to a new account.
     #[ink(event)]
     pub struct AuctionGovernanceUpdated {
         #[ink(topic)]
@@ -133,38 +143,58 @@ mod auction {
         new_governance: AccountId,
     }
 
+    /// Emitted when the admin account (allowed to bid on expired no-bid auctions) is updated.
     #[ink(event)]
     pub struct AdminUpdated {
         #[ink(topic)]
         admin: Option<AccountId>,
     }
 
+    /// Errors returned by the auction contract.
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
+        /// Caller is not the controller (vault) contract.
         NotController,
+        /// Caller is not the governance account.
         NotGovernance,
+        /// Caller is not the configured admin.
         NotAdmin,
         AuctionNotFound,
         BidNotFound,
+        /// Caller is not the original bidder of the referenced bid.
         NotBidder,
+        /// An active auction already exists for the given vault.
         AuctionAlreadyExistsForVault,
+        /// Bid amount is below the auction's minimum.
         BidBelowMinBid,
+        /// Auction has already ended and accepts no further bids.
         AuctionEnded,
+        /// Operation requires the auction to have ended.
         AuctionNotEnded,
+        /// Auction has already been finalized.
         AuctionFinalized,
+        /// Auction ended with no valid bids.
         AuctionHasNoBids,
+        /// Refund is not available because this bid is the winning bid.
         WinningBidLocked,
+        /// The winning bid was already transferred out.
         WinningBidAlreadyTransferred,
+        /// Provided auction duration is zero or above the maximum.
         InvalidDuration,
+        /// Underlying ERC20 transfer failed.
         TransferFailed,
+        /// No refund balance is available to withdraw.
         NoRefundAvailable,
+        /// A re-bid must strictly exceed the bidder's previous amount.
         BidAmountNotIncreased,
+        /// Arithmetic overflow or underflow.
         ArithmeticError,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
 
+    /// Internal staging value computed by `prepare_bid` before storage writes.
     struct PreparedBid {
         auction: Auction,
         bid: Bid,
@@ -271,6 +301,7 @@ mod auction {
             Ok(auction_id)
         }
 
+        /// Sets or clears the admin account that may bid on expired no-bid auctions; governance-only.
         #[ink(message)]
         pub fn set_admin(&mut self, admin: Option<AccountId>) -> Result<()> {
             self.ensure_governance()?;
@@ -279,6 +310,7 @@ mod auction {
             Ok(())
         }
 
+        /// Transfers auction governance to a new account; controller-only.
         #[ink(message)]
         pub fn update_governance(&mut self, new_governance: AccountId) -> Result<()> {
             self.ensure_controller()?;
@@ -332,6 +364,7 @@ mod auction {
             Ok(bid_id)
         }
 
+        /// Validates and stages a new or raised bid; returns updated auction and bid records plus the token amount to pull in.
         fn prepare_bid(
             &self,
             mut auction: Auction,
@@ -627,6 +660,7 @@ mod auction {
             Ok(auctions)
         }
 
+        /// Removes an auction from the active-auction index using swap-and-pop to keep it contiguous.
         fn remove_active_auction(&mut self, auction_id: u32) -> Result<()> {
             let active_index = self
                 .active_auction_indices
@@ -654,6 +688,7 @@ mod auction {
             Ok(())
         }
 
+        /// Reverts with `NotController` if caller is not the vault controller.
         #[inline]
         fn ensure_controller(&self) -> Result<()> {
             if self.env().caller() != self.controller {
@@ -662,6 +697,7 @@ mod auction {
             Ok(())
         }
 
+        /// Reverts with `NotGovernance` if caller is not the governance account.
         #[inline]
         fn ensure_governance(&self) -> Result<()> {
             if self.env().caller() != self.governance {
@@ -670,6 +706,8 @@ mod auction {
             Ok(())
         }
 
+        /// Validates that a bid is currently allowed: not finalized, and either before end-time
+        /// or (after end-time with no bids yet) only by the admin.
         pub(crate) fn ensure_bid_allowed(
             &self,
             auction: &Auction,
@@ -717,6 +755,7 @@ mod auction {
 
     #[cfg(test)]
     impl TusdtAuction {
+        /// Test-only helper that injects a single bid into an auction to bootstrap test scenarios.
         pub(crate) fn seed_bid_for_test(
             &mut self,
             auction_id: u32,

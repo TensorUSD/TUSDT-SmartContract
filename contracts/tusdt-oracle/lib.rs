@@ -15,6 +15,7 @@ mod oracle {
     const MAX_ROUND_SUBMISSIONS: u32 = 256;
     const DEFAULT_MAX_PRICE_DEVIATION_BASIS_POINTS: u32 = 2_000;
 
+    /// Snapshot of a committed oracle round, including its final price and source median.
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -27,6 +28,7 @@ mod oracle {
         pub was_overridden: bool,
     }
 
+    /// Optional metadata attached to a reporter's submission (e.g. originating hotkey).
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -34,6 +36,7 @@ mod oracle {
         pub hot_key: AccountId,
     }
 
+    /// A single reporter's price submission for an open round.
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -43,6 +46,7 @@ mod oracle {
         pub metadata: Option<PriceSubmissionMetadata>,
     }
 
+    /// Lightweight summary of a round used by view callers.
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     #[ink::scale_derive(Decode, Encode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -52,6 +56,7 @@ mod oracle {
         pub median_price: Option<Ratio>,
     }
 
+    /// Oracle storage: roles, the open round, all submissions, and committed price history.
     #[ink(storage)]
     pub struct TusdtOracle {
         controller: AccountId,
@@ -69,6 +74,7 @@ mod oracle {
         max_price_deviation: Ratio,
     }
 
+    /// Emitted when a reporter is enabled or disabled.
     #[ink(event)]
     pub struct ReporterUpdated {
         #[ink(topic)]
@@ -76,6 +82,7 @@ mod oracle {
         enabled: bool,
     }
 
+    /// Emitted when a reporter submits (or replaces) a price for the current round.
     #[ink(event)]
     pub struct PriceSubmitted {
         #[ink(topic)]
@@ -87,6 +94,7 @@ mod oracle {
         replaced_existing: bool,
     }
 
+    /// Emitted when a round is committed and a new latest price is recorded.
     #[ink(event)]
     pub struct RoundCommitted {
         #[ink(topic)]
@@ -97,6 +105,7 @@ mod oracle {
         was_overridden: bool,
     }
 
+    /// Emitted when oracle governance is transferred to a new account.
     #[ink(event)]
     pub struct OracleGovernanceUpdated {
         #[ink(topic)]
@@ -105,29 +114,42 @@ mod oracle {
         new_governance: AccountId,
     }
 
+    /// Emitted when the validator account is set or cleared.
     #[ink(event)]
     pub struct ValidatorUpdated {
         #[ink(topic)]
         validator: Option<AccountId>,
     }
 
+    /// Emitted when the maximum allowed price deviation is changed.
     #[ink(event)]
     pub struct MaxPriceDeviationUpdated {
         max_price_deviation: Ratio,
     }
 
+    /// Errors returned by the oracle contract.
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
+        /// Caller is not the configured controller (vault).
         NotController,
+        /// Caller is not the governance account.
         NotGovernance,
+        /// Caller is not the configured validator.
         NotValidator,
+        /// Caller is not an authorized reporter.
         NotReporter,
+        /// Submitted or overridden price was zero / invalid.
         InvalidPrice,
+        /// Round has fewer than `MIN_REPORTERS` submissions for a non-override commit.
         NotEnoughSubmissions,
+        /// Round contains no submissions, so a median cannot be computed.
         MedianUnavailable,
+        /// The per-round submission cap has been reached.
         MaxSubmissionsReached,
+        /// The candidate price moved outside the configured deviation band.
         PriceDeviationExceeded,
+        /// Arithmetic overflow or underflow.
         ArithmeticError,
     }
 
@@ -412,6 +434,7 @@ mod oracle {
             self.max_price_deviation
         }
 
+        /// Reverts with `NotController` if caller is not the controller (vault) account.
         fn ensure_controller(&self) -> Result<()> {
             if self.env().caller() != self.controller {
                 return Err(Error::NotController);
@@ -419,6 +442,7 @@ mod oracle {
             Ok(())
         }
 
+        /// Reverts with `NotGovernance` if caller is not the governance account.
         fn ensure_governance(&self) -> Result<()> {
             if self.env().caller() != self.governance {
                 return Err(Error::NotGovernance);
@@ -426,6 +450,7 @@ mod oracle {
             Ok(())
         }
 
+        /// Reverts with `NotValidator` if caller is not the currently configured validator.
         fn ensure_validator(&self) -> Result<()> {
             if self.validator != Some(self.env().caller()) {
                 return Err(Error::NotValidator);
@@ -433,10 +458,12 @@ mod oracle {
             Ok(())
         }
 
+        /// Returns the ID of the most recently committed round, or `None` before any commit.
         fn latest_committed_round_id(&self) -> Option<u32> {
             self.current_round_id.checked_sub(1)
         }
 
+        /// Ensures `candidate` is within `max_price_deviation` of the latest committed price.
         fn ensure_within_deviation(&self, candidate: Ratio) -> Result<()> {
             let Some(latest) = self.latest_price else {
                 return Ok(());
@@ -455,6 +482,7 @@ mod oracle {
             Ok(())
         }
 
+        /// Writes the committed price for the round, advances `current_round_id`, and emits `RoundCommitted`.
         fn finalize_round(
             &mut self,
             round_id: u32,
@@ -490,6 +518,7 @@ mod oracle {
             Ok(price_data)
         }
 
+        /// Computes the median of all submitted prices for a round; averages the middle two for even counts.
         fn compute_round_median(&self, round_id: u32) -> Result<Option<Ratio>> {
             let reporter_count = self.round_reporter_count.get(round_id).unwrap_or(0);
             if reporter_count == 0 {
