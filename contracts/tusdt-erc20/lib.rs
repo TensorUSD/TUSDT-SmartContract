@@ -6,6 +6,7 @@ pub use self::tusdt::{TusdtErc20, TusdtErc20Ref};
 mod tusdt {
     use ink::storage::Mapping;
 
+    /// Storage for the tUSDT ERC20-style stablecoin: controller, supply, balances, and allowances.
     #[ink(storage)]
     pub struct TusdtErc20 {
         controller: AccountId,
@@ -14,6 +15,7 @@ mod tusdt {
         allowances: Mapping<(AccountId, AccountId), Balance>,
     }
 
+    /// Emitted on token movement; `from = None` denotes a mint, `to = None` denotes a burn.
     #[ink(event)]
     pub struct Transfer {
         #[ink(topic)]
@@ -23,6 +25,7 @@ mod tusdt {
         value: Balance,
     }
 
+    /// Emitted whenever an owner sets or updates a spender's allowance.
     #[ink(event)]
     pub struct Approval {
         #[ink(topic)]
@@ -32,12 +35,17 @@ mod tusdt {
         value: Balance,
     }
 
+    /// Errors returned by the tUSDT token contract.
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
+        /// Sender's balance is below the requested amount.
         InsufficientBalance,
+        /// Caller's allowance from the owner is below the requested amount.
         InsufficientAllowance,
+        /// Caller is not the configured controller (vault) account.
         NotController,
+        /// An arithmetic overflow or underflow occurred.
         ArithmeticError,
     }
 
@@ -73,6 +81,7 @@ mod tusdt {
             self.balance_of_impl(&owner)
         }
 
+        /// Internal balance lookup; returns 0 for accounts with no entry.
         #[inline]
         fn balance_of_impl(&self, owner: &AccountId) -> Balance {
             self.balances.get(owner).unwrap_or_default()
@@ -84,11 +93,13 @@ mod tusdt {
             self.allowance_impl(&owner, &spender)
         }
 
+        /// Internal allowance lookup; returns 0 when no allowance is set.
         #[inline]
         fn allowance_impl(&self, owner: &AccountId, spender: &AccountId) -> Balance {
             self.allowances.get((owner, spender)).unwrap_or_default()
         }
 
+        /// Writes the allowance entry and emits an `Approval` event.
         #[inline]
         fn set_allowance(&mut self, owner: AccountId, spender: AccountId, value: Balance) {
             self.allowances.insert((&owner, &spender), &value);
@@ -99,6 +110,7 @@ mod tusdt {
             });
         }
 
+        /// Reverts with `NotController` if the caller is not the configured controller (vault).
         #[inline]
         fn ensure_controller(&self) -> Result<()> {
             if self.env().caller() != self.controller {
@@ -223,6 +235,7 @@ mod tusdt {
             Ok(())
         }
 
+        /// Core balance-moving routine shared by `transfer` and `transfer_from`; emits a `Transfer` event.
         fn transfer_from_to(
             &mut self,
             from: &AccountId,
