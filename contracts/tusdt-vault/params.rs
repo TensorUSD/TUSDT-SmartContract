@@ -5,6 +5,9 @@ const DEFAULT_LIQUIDATION_RATIO_BASIS_POINTS: u32 = 12_000;
 const DEFAULT_INTEREST_RATE_BASIS_POINTS: u32 = 1_000;
 const DEFAULT_LIQUIDATION_FEE_BASIS_POINTS: u32 = 1_100;
 const DEFAULT_BORROW_CAP: Balance = 10_000_000_000_000; // 10 Thousand
+const DEFAULT_MIN_VAULT_COLLATERAL: Balance = 5_000_000;
+const DEFAULT_MAX_VAULT_COLLATERAL: Balance = 1_000_000_000;
+const DEFAULT_MAX_TOTAL_COLLATERAL: Balance = 21_000_000_000;
 const DEFAULT_TRANSACTION_FEE_BASIS_POINTS: u32 = 30;
 const DEFAULT_AUCTION_DURATION_MS: u64 = 3_600_000;
 const DEFAULT_MAX_ORACLE_AGE_MS: u64 = 3_600_000;
@@ -18,6 +21,9 @@ impl TusdtVault {
             interest_rate: Ratio::from_basis_points(DEFAULT_INTEREST_RATE_BASIS_POINTS),
             liquidation_fee: Ratio::from_basis_points(DEFAULT_LIQUIDATION_FEE_BASIS_POINTS),
             borrow_cap: DEFAULT_BORROW_CAP,
+            min_vault_collateral: DEFAULT_MIN_VAULT_COLLATERAL,
+            max_vault_collateral: DEFAULT_MAX_VAULT_COLLATERAL,
+            max_total_collateral: DEFAULT_MAX_TOTAL_COLLATERAL,
             transaction_fee: Ratio::from_basis_points(DEFAULT_TRANSACTION_FEE_BASIS_POINTS),
             auction_duration_ms: DEFAULT_AUCTION_DURATION_MS,
             max_oracle_age_ms: DEFAULT_MAX_ORACLE_AGE_MS,
@@ -36,6 +42,9 @@ impl TusdtVault {
             interest_rate: Ratio::from_basis_points(params.interest_rate),
             liquidation_fee: Ratio::from_basis_points(params.liquidation_fee),
             borrow_cap: params.borrow_cap,
+            min_vault_collateral: params.min_vault_collateral,
+            max_vault_collateral: params.max_vault_collateral,
+            max_total_collateral: params.max_total_collateral,
             transaction_fee: Ratio::from_basis_points(params.transaction_fee),
             auction_duration_ms: params.auction_duration_ms,
             max_oracle_age_ms: params.max_oracle_age_ms,
@@ -65,6 +74,9 @@ impl TusdtVault {
                 .to_basis_points()
                 .expect("stored liquidation fee should fit in u32 basis points"),
             borrow_cap: params.borrow_cap,
+            min_vault_collateral: params.min_vault_collateral,
+            max_vault_collateral: params.max_vault_collateral,
+            max_total_collateral: params.max_total_collateral,
             transaction_fee: params
                 .transaction_fee
                 .to_basis_points()
@@ -110,6 +122,18 @@ impl TusdtVault {
         }
         if params.max_oracle_age_ms == 0 {
             return Err(Error::InvalidOracleMaxAge);
+        }
+        // Minimum opening collateral must be positive so the floor is meaningful.
+        if params.min_vault_collateral == 0 {
+            return Err(Error::InvalidRatio);
+        }
+        // Per-vault cap must accommodate at least one minimum-sized vault.
+        if params.max_vault_collateral < params.min_vault_collateral {
+            return Err(Error::InvalidRatio);
+        }
+        // Global cap must accommodate at least one full per-vault cap.
+        if params.max_total_collateral < params.max_vault_collateral {
+            return Err(Error::InvalidRatio);
         }
         Ok(())
     }
