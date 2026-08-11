@@ -7,7 +7,7 @@
     "build:erc20-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-erc20/Cargo.toml --release",
     "build:auction-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-auction/Cargo.toml --release",
     "build:oracle-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-oracle/Cargo.toml --release",
-    "build:vault-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-vault/Cargo.toml --release",
+    "build:vault-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-vault-alpha/Cargo.toml --release",
     "build:treasury-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-treasury/Cargo.toml --release",
     "build:governance-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-governance/Cargo.toml --release",
     "build:election-artifacts": "cargo contract build --manifest-path ../contracts/tusdt-election/Cargo.toml --release",

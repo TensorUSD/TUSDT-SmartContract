@@ -1,4 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
+#![allow(clippy::enum_variant_names)]
 
 pub use self::oracle::{
     PriceData, PriceSubmission, PriceSubmissionMetadata, RoundSummary, TusdtOracle, TusdtOracleRef,
@@ -14,7 +15,7 @@ mod oracle {
     const PAGE_SIZE: u32 = 10;
     const MAX_ROUND_SUBMISSIONS: u32 = 256;
     const DEFAULT_MAX_PRICE_DEVIATION_BASIS_POINTS: u32 = 1_000;
-    /// Minimum subnet alpha stake required to submit a price (default 1e12, matching governance).
+    /// Minimum subnet alpha stake required to submit a price (default 10_000_000_000 rao = 10 TAO).
     const DEFAULT_MIN_SUBMITTER_STAKE: u128 = 10_000_000_000;
 
     /// Snapshot of a committed oracle round, including its final price and source median.
@@ -138,6 +139,15 @@ mod oracle {
         min_submitter_stake: u128,
     }
 
+    /// Emitted when the controller (vault) address is updated by governance.
+    #[ink(event)]
+    pub struct OracleControllerUpdated {
+        #[ink(topic)]
+        old_controller: AccountId,
+        #[ink(topic)]
+        new_controller: AccountId,
+    }
+
     /// Errors returned by the oracle contract.
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
@@ -243,23 +253,16 @@ mod oracle {
                 if reporter_count >= MAX_ROUND_SUBMISSIONS {
                     return Err(Error::MaxSubmissionsReached);
                 }
-                self.round_reporters
-                    .insert((round_id, reporter_count), &coldkey);
+                self.round_reporters.insert((round_id, reporter_count), &coldkey);
                 self.round_reporter_count.insert(
                     round_id,
-                    &reporter_count
-                        .checked_add(1)
-                        .ok_or(Error::ArithmeticError)?,
+                    &reporter_count.checked_add(1).ok_or(Error::ArithmeticError)?,
                 );
             }
 
             self.round_submissions.insert(
                 (round_id, coldkey),
-                &PriceSubmission {
-                    reporter: coldkey,
-                    price,
-                    metadata: metadata.clone(),
-                },
+                &PriceSubmission { reporter: coldkey, price, metadata: metadata.clone() },
             );
 
             self.env().emit_event(PriceSubmitted {
@@ -273,7 +276,7 @@ mod oracle {
             Ok(())
         }
 
-        /// Commits the current round using the median submission price or an optional validator override.
+        /// Commits the current round using the median submission price or an optional validator override. Validator-only.
         #[ink(message)]
         pub fn commit_round(&mut self, override_price: Option<Ratio>) -> Result<PriceData> {
             self.ensure_validator()?;
@@ -290,7 +293,7 @@ mod oracle {
                     }
                     let median_price = round_median.ok_or(Error::MedianUnavailable)?;
                     (median_price, median_price, false)
-                }
+                },
             };
             self.ensure_within_deviation(committed_price)?;
             self.finalize_round(
@@ -302,7 +305,7 @@ mod oracle {
             )
         }
 
-        /// Commits the current round with a governance-supplied price, bypassing quorum and deviation checks.
+        /// Commits the current round with a governance-supplied price, bypassing quorum and deviation checks. Governance-only.
         #[ink(message)]
         pub fn commit_round_governance(&mut self, price: Ratio) -> Result<PriceData> {
             self.ensure_governance()?;
@@ -330,13 +333,11 @@ mod oracle {
         pub fn set_min_submitter_stake(&mut self, min_stake: u128) -> Result<()> {
             self.ensure_governance()?;
             self.min_submitter_stake = min_stake;
-            self.env().emit_event(MinSubmitterStakeUpdated {
-                min_submitter_stake: min_stake,
-            });
+            self.env().emit_event(MinSubmitterStakeUpdated { min_submitter_stake: min_stake });
             Ok(())
         }
 
-        /// Sets or clears the validator account allowed to commit rounds.
+        /// Sets or clears the validator account allowed to commit rounds. Governance-only.
         #[ink(message)]
         pub fn set_validator(&mut self, validator: Option<AccountId>) -> Result<()> {
             self.ensure_governance()?;
@@ -345,27 +346,34 @@ mod oracle {
             Ok(())
         }
 
-        /// Updates the maximum allowed deviation between consecutive committed prices.
+        /// Updates the maximum allowed deviation between consecutive committed prices. Governance-only.
         #[ink(message)]
         pub fn set_max_price_deviation(&mut self, max_price_deviation: Ratio) -> Result<()> {
             self.ensure_governance()?;
             self.max_price_deviation = max_price_deviation;
-            self.env().emit_event(MaxPriceDeviationUpdated {
-                max_price_deviation,
-            });
+            self.env().emit_event(MaxPriceDeviationUpdated { max_price_deviation });
             Ok(())
         }
 
-        /// Transfers oracle governance control to a new account.
+        /// Transfers oracle governance control to a new account. Controller-only.
         #[ink(message)]
         pub fn update_governance(&mut self, new_governance: AccountId) -> Result<()> {
             self.ensure_controller()?;
             let previous_governance = self.governance;
             self.governance = new_governance;
-            self.env().emit_event(OracleGovernanceUpdated {
-                previous_governance,
-                new_governance,
-            });
+            self.env().emit_event(OracleGovernanceUpdated { previous_governance, new_governance });
+            Ok(())
+        }
+
+        /// Transfers the controller (vault) role to a new account. Governance-only.
+        /// Used during vault upgrades to hand off control of this oracle to a new
+        /// vault instance.
+        #[ink(message)]
+        pub fn set_controller(&mut self, new_controller: AccountId) -> Result<()> {
+            self.ensure_governance()?;
+            let old_controller = self.controller;
+            self.controller = new_controller;
+            self.env().emit_event(OracleControllerUpdated { old_controller, new_controller });
             Ok(())
         }
 
@@ -534,10 +542,8 @@ mod oracle {
                 return Ok(());
             }
             let abs_diff = candidate.abs_diff(latest.price);
-            let max_diff = latest
-                .price
-                .checked_mul(self.max_price_deviation)
-                .ok_or(Error::ArithmeticError)?;
+            let max_diff =
+                latest.price.checked_mul(self.max_price_deviation).ok_or(Error::ArithmeticError)?;
             if abs_diff > max_diff {
                 return Err(Error::PriceDeviationExceeded);
             }
@@ -564,10 +570,8 @@ mod oracle {
 
             self.committed_round_prices.insert(round_id, &price_data);
             self.latest_price = Some(price_data);
-            self.current_round_id = self
-                .current_round_id
-                .checked_add(1)
-                .ok_or(Error::ArithmeticError)?;
+            self.current_round_id =
+                self.current_round_id.checked_add(1).ok_or(Error::ArithmeticError)?;
 
             self.env().emit_event(RoundCommitted {
                 round_id,
@@ -610,10 +614,7 @@ mod oracle {
                 .get(middle_index.saturating_sub(1))
                 .copied()
                 .ok_or(Error::MedianUnavailable)?;
-            let upper = prices
-                .get(middle_index)
-                .copied()
-                .ok_or(Error::MedianUnavailable)?;
+            let upper = prices.get(middle_index).copied().ok_or(Error::MedianUnavailable)?;
             let average_inner = lower
                 .into_inner()
                 .checked_add(upper.into_inner())

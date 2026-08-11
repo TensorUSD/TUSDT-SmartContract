@@ -23,8 +23,8 @@ export const CONTRACT_CONFIGS = {
     manifestPath: resolve(REPO_ROOT, "contracts/tusdt-oracle/Cargo.toml"),
   },
   vault: {
-    artifactPath: resolve(REPO_ROOT, "target/ink/tusdt_vault/tusdt_vault.contract"),
-    manifestPath: resolve(REPO_ROOT, "contracts/tusdt-vault/Cargo.toml"),
+    artifactPath: resolve(REPO_ROOT, "target/ink/tusdt_vault_alpha/tusdt_vault_alpha.contract"),
+    manifestPath: resolve(REPO_ROOT, "contracts/tusdt-vault-alpha/Cargo.toml"),
   },
   treasury: {
     artifactPath: resolve(REPO_ROOT, "target/ink/tusdt_treasury/tusdt_treasury.contract"),

@@ -1,9 +1,11 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
+#![allow(clippy::enum_variant_names)]
+#![allow(clippy::type_complexity)]
 
 pub use self::governance::{
-    CouncilSet, GovernanceParams, MaintainerChanged, Proposal, ProposalExecuted, ProposalFinalized,
-    ProposalKind, ProposalStatus, ProposalSubmitted, Snapshot, SnapshotSubmitted, TusdtGovernance,
-    TusdtGovernanceRef, Voted,
+    CouncilSet, GovernanceParams, MaintainerChanged, PoolAddressUpdated, Proposal,
+    ProposalExecuted, ProposalFinalized, ProposalKind, ProposalStatus, ProposalSubmitted, Snapshot,
+    SnapshotSubmitted, TusdtGovernance, TusdtGovernanceRef, Voted,
 };
 
 #[ink::contract(env = tusdt_env::CustomEnvironment)]
@@ -14,10 +16,16 @@ mod governance {
     use ink::{env::call::FromAccountId, ToAccountId};
     use tusdt_auction::TusdtAuctionRef;
     use tusdt_election::TusdtElectionRef;
+    use tusdt_lending_pool::{
+        AlphaMarketParamsConfig, InterestRateParamsConfig, PoolGlobalParamsConfig,
+        TusdtLendingPoolRef,
+    };
     use tusdt_oracle::{PriceData, TusdtOracleRef};
     use tusdt_primitives::Ratio;
     use tusdt_treasury::{Fund, TokenKind, TusdtTreasuryRef};
-    use tusdt_vault::{TusdtVaultRef, VaultContractParamsConfig};
+    use tusdt_vault_alpha::{
+        TusdtVaultAlphaRef, VaultContractParamsConfig, VaultGlobalParamsConfig,
+    };
 
     // Cross-contract forwarders that let governance drive the vault, auction, and oracle.
     // `forward_*` helpers defined here.
@@ -48,12 +56,17 @@ mod governance {
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub struct GovernanceParams {
+        /// How long voting stays open after a proposal is submitted, in milliseconds
+        /// (default 7 days = 604,800,000 ms).
         pub voting_period_ms: u64,
         /// Quorum as a fraction of the alpha circulating supply, in basis points (2_000 = 20%).
         /// A proposal passes only if the raw balance that voted reaches `circulating_supply *
         /// quorum_bps / 10_000`; see [`quorum`].
         pub quorum_bps: u32,
+        /// Minimum approval ratio in basis points (5_001 = 50.01%). Weighted by voting power:
+        /// `yes * 10_000 / (yes + no) >= approval_bps`.
         pub approval_bps: u32,
+        /// Unused in the current council-only proposal model; kept for SCALE compatibility.
         pub min_proposer_stake: u128,
         /// First day-of-month (UTC, inclusive) on which proposals may be submitted.
         pub submission_open_day: u8,
@@ -81,12 +94,7 @@ mod governance {
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub enum ProposalKind {
-        Funding {
-            fund: Fund,
-            token_kind: TokenKind,
-            amount: Balance,
-            recipient: AccountId,
-        },
+        Funding { fund: Fund, token_kind: TokenKind, amount: Balance, recipient: AccountId },
         NonFunding,
     }
 
@@ -157,9 +165,10 @@ mod governance {
         /// The vault, auction, and oracle this governance contract steers. After deployment the
         /// vault's governance role (and, via the vault's propagation, the auction's and oracle's)
         /// is handed to this contract, so these forwarding calls are accepted as `governance`.
-        vault: TusdtVaultRef,
+        vault: TusdtVaultAlphaRef,
         auction: TusdtAuctionRef,
         oracle: TusdtOracleRef,
+        pool: TusdtLendingPoolRef,
         /// The subnet whose alpha stake gates proposer eligibility. Bound to the elected maintainer
         /// (the subnet they govern) — only the election contract changes it, via [`TusdtGovernance::election_set_netuid`].
         netuid: u16,
@@ -239,6 +248,51 @@ mod governance {
         snapshot_block: u32,
     }
 
+    /// Emitted when the stored vault contract address is updated by the maintainer.
+    #[ink(event)]
+    pub struct VaultAddressUpdated {
+        #[ink(topic)]
+        old_vault: AccountId,
+        #[ink(topic)]
+        new_vault: AccountId,
+    }
+
+    /// Emitted when the stored lending pool contract address is updated by the maintainer.
+    #[ink(event)]
+    pub struct PoolAddressUpdated {
+        #[ink(topic)]
+        old_pool: AccountId,
+        #[ink(topic)]
+        new_pool: AccountId,
+    }
+
+    /// Emitted when the stored auction contract address is updated by the maintainer.
+    #[ink(event)]
+    pub struct GovernanceAuctionUpdated {
+        #[ink(topic)]
+        old_auction: AccountId,
+        #[ink(topic)]
+        new_auction: AccountId,
+    }
+
+    /// Emitted when the stored oracle contract address is updated by the maintainer.
+    #[ink(event)]
+    pub struct GovernanceOracleUpdated {
+        #[ink(topic)]
+        old_oracle: AccountId,
+        #[ink(topic)]
+        new_oracle: AccountId,
+    }
+
+    /// Emitted when the stored treasury contract address is updated by the maintainer.
+    #[ink(event)]
+    pub struct GovernanceTreasuryUpdated {
+        #[ink(topic)]
+        old_treasury: AccountId,
+        #[ink(topic)]
+        new_treasury: AccountId,
+    }
+
     /// Errors returned by the governance contract.
     #[derive(Debug, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
@@ -266,7 +320,10 @@ mod governance {
         TreasuryCallFailed,
         VaultCallFailed,
         AuctionCallFailed,
+        PoolCallFailed,
         OracleCallFailed,
+        /// Cross-contract call to the vault's token-controller transfer failed.
+        VaultTokenCallFailed,
         ArithmeticError,
     }
 
@@ -331,8 +388,9 @@ mod governance {
                 election: TusdtElectionRef::from_account_id(election),
                 council: Vec::new(),
                 treasury: TusdtTreasuryRef::from_account_id(treasury_address),
-                vault: TusdtVaultRef::from_account_id(vault_address),
+                vault: TusdtVaultAlphaRef::from_account_id(vault_address),
                 auction: TusdtAuctionRef::from_account_id(auction_address),
+                pool: TusdtLendingPoolRef::from_account_id([0u8; 32].into()),
                 oracle: TusdtOracleRef::from_account_id(oracle_address),
                 netuid: DEFAULT_NETUID,
                 params: GovernanceParams::default_params(),
@@ -380,6 +438,24 @@ mod governance {
             self.treasury.to_account_id()
         }
 
+        /// Returns the vault contract address.
+        #[ink(message)]
+        pub fn vault_address(&self) -> AccountId {
+            self.vault.to_account_id()
+        }
+
+        /// Returns the auction contract address.
+        #[ink(message)]
+        pub fn auction_address(&self) -> AccountId {
+            self.auction.to_account_id()
+        }
+
+        /// Returns the oracle contract address.
+        #[ink(message)]
+        pub fn oracle_address(&self) -> AccountId {
+            self.oracle.to_account_id()
+        }
+
         /// Installs `new_maintainer` as the maintainer; callable only by the election contract.
         /// The explicit selector is matched by the election's raw cross-contract call.
         #[ink(message, selector = 0xE1EC7000)]
@@ -387,10 +463,7 @@ mod governance {
             self.ensure_election()?;
             let previous = self.maintainer;
             self.maintainer = new_maintainer;
-            self.env().emit_event(MaintainerChanged {
-                previous,
-                new: new_maintainer,
-            });
+            self.env().emit_event(MaintainerChanged { previous, new: new_maintainer });
             Ok(())
         }
 
@@ -404,6 +477,63 @@ mod governance {
             Ok(())
         }
 
+        /// Updates the stored vault contract address. Maintainer-only.
+        /// Used after a vault upgrade to point governance at the new vault.
+        #[ink(message)]
+        pub fn update_vault_address(&mut self, new_vault: AccountId) -> Result<()> {
+            self.ensure_maintainer()?;
+            let old_vault = self.vault.to_account_id();
+            self.vault = TusdtVaultAlphaRef::from_account_id(new_vault);
+            self.env().emit_event(VaultAddressUpdated { old_vault, new_vault });
+            Ok(())
+        }
+
+        /// Updates the stored lending pool contract address. Maintainer-only.
+        #[ink(message)]
+        pub fn update_pool_address(&mut self, new_pool: AccountId) -> Result<()> {
+            self.ensure_maintainer()?;
+            let old_pool = self.pool.to_account_id();
+            self.pool = TusdtLendingPoolRef::from_account_id(new_pool);
+            self.env().emit_event(PoolAddressUpdated { old_pool, new_pool });
+            Ok(())
+        }
+
+        /// Returns the stored lending pool address.
+        #[ink(message)]
+        pub fn pool_address(&self) -> AccountId {
+            self.pool.to_account_id()
+        }
+
+        /// Updates the stored auction contract address. Maintainer-only.
+        #[ink(message)]
+        pub fn update_auction_address(&mut self, new_auction: AccountId) -> Result<()> {
+            self.ensure_maintainer()?;
+            let old_auction = self.auction.to_account_id();
+            self.auction = TusdtAuctionRef::from_account_id(new_auction);
+            self.env().emit_event(GovernanceAuctionUpdated { old_auction, new_auction });
+            Ok(())
+        }
+
+        /// Updates the stored oracle contract address. Maintainer-only.
+        #[ink(message)]
+        pub fn update_oracle_address(&mut self, new_oracle: AccountId) -> Result<()> {
+            self.ensure_maintainer()?;
+            let old_oracle = self.oracle.to_account_id();
+            self.oracle = TusdtOracleRef::from_account_id(new_oracle);
+            self.env().emit_event(GovernanceOracleUpdated { old_oracle, new_oracle });
+            Ok(())
+        }
+
+        /// Updates the stored treasury contract address. Maintainer-only.
+        #[ink(message)]
+        pub fn update_treasury_address(&mut self, new_treasury: AccountId) -> Result<()> {
+            self.ensure_maintainer()?;
+            let old_treasury = self.treasury.to_account_id();
+            self.treasury = TusdtTreasuryRef::from_account_id(new_treasury);
+            self.env().emit_event(GovernanceTreasuryUpdated { old_treasury, new_treasury });
+            Ok(())
+        }
+
         /// Replaces the entire council with `members`; maintainer-only. Requires exactly
         /// [`COUNCIL_SIZE`] distinct members, otherwise returns [`Error::InvalidCouncil`].
         #[ink(message)]
@@ -414,11 +544,7 @@ mod governance {
             }
             // Reject duplicates so the committee really has COUNCIL_SIZE distinct members.
             for (i, m) in members.iter().enumerate() {
-                if members
-                    .iter()
-                    .skip(i.saturating_add(1))
-                    .any(|other| other == m)
-                {
+                if members.iter().skip(i.saturating_add(1)).any(|other| other == m) {
                     return Err(Error::InvalidCouncil);
                 }
             }
@@ -435,19 +561,20 @@ mod governance {
         // operational call, kept fast for emergencies.
         // ---------------------------------------------------------------------------------------
 
-        /// Schedules a vault contract-parameter update (behind the vault's timelock); maintainer-only.
+        /// Schedules a vault contract-parameter update for a specific netuid; maintainer-only.
         #[ink(message)]
         pub fn vault_set_contract_params(
             &mut self,
+            netuid: u16,
             params: VaultContractParamsConfig,
         ) -> Result<()> {
-            self.forward_vault_set_contract_params(params)
+            self.forward_vault_set_contract_params(netuid, params)
         }
 
-        /// Cancels the vault's currently scheduled contract-parameter update; maintainer-only.
+        /// Cancels the vault's currently scheduled contract-parameter update for a netuid; maintainer-only.
         #[ink(message)]
-        pub fn vault_cancel_contract_params_update(&mut self) -> Result<()> {
-            self.forward_vault_cancel_contract_params_update()
+        pub fn vault_cancel_contract_params_update(&mut self, netuid: u16) -> Result<()> {
+            self.forward_vault_cancel_contract_params_update(netuid)
         }
 
         /// Updates the vault's treasury (fee recipient) account; maintainer-only.
@@ -462,10 +589,71 @@ mod governance {
             self.forward_vault_update_platform(new_platform)
         }
 
+        /// Transfers the ERC20 token controller via the vault; maintainer-only.
+        #[ink(message)]
+        pub fn vault_set_token_controller(&mut self, new_controller: AccountId) -> Result<()> {
+            self.forward_vault_set_token_controller(new_controller)
+        }
+
+        /// Updates the vault's auction contract address via governance; maintainer-only.
+        #[ink(message)]
+        pub fn vault_update_auction_address(&mut self, new_auction: AccountId) -> Result<()> {
+            self.forward_vault_update_auction_address(new_auction)
+        }
+
+        /// Updates the vault's oracle contract address via governance; maintainer-only.
+        #[ink(message)]
+        pub fn vault_update_oracle_address(&mut self, new_oracle: AccountId) -> Result<()> {
+            self.forward_vault_update_oracle_address(new_oracle)
+        }
+
         /// Unpauses the vault; maintainer-only (deliberate recovery).
         #[ink(message)]
         pub fn vault_unpause(&mut self) -> Result<()> {
             self.forward_vault_unpause()
+        }
+
+        /// Returns the vault's staking hotkey address.
+        #[ink(message)]
+        pub fn vault_get_hotkey(&self) -> AccountId {
+            self.forward_vault_get_hotkey()
+        }
+
+        /// Migrates the vault's staking hotkey to a new address. Maintainer-only.
+        #[ink(message)]
+        pub fn vault_set_hotkey(&mut self, new_hotkey: AccountId, netuids: Vec<u16>) -> Result<()> {
+            self.forward_vault_set_hotkey(new_hotkey, netuids)
+        }
+
+        /// Transfers the vault's native TAO balance to the treasury. Maintainer-only.
+        #[ink(message)]
+        pub fn vault_transfer_native_to_treasury(&mut self) -> Result<()> {
+            self.forward_vault_transfer_native_to_treasury()
+        }
+
+        /// Claims excess alpha on a subnet from the vault and sends the TAO to treasury.
+        /// Maintainer-only.
+        #[ink(message)]
+        pub fn vault_claim_excess_alpha(&mut self, netuid: u16) -> Result<()> {
+            self.forward_vault_claim_excess_alpha(netuid)
+        }
+
+        /// Approves or removes a netuid for vault alpha collateral; maintainer-only.
+        #[ink(message)]
+        pub fn vault_set_approved_netuid(&mut self, netuid: u16, approved: bool) -> Result<()> {
+            self.forward_vault_set_approved_netuid(netuid, approved)
+        }
+
+        /// Schedules a vault global-parameter update (24h timelock); maintainer-only.
+        #[ink(message)]
+        pub fn vault_set_global_params(&mut self, config: VaultGlobalParamsConfig) -> Result<()> {
+            self.forward_vault_set_global_params(config)
+        }
+
+        /// Cancels the vault's currently scheduled global-parameter update; maintainer-only.
+        #[ink(message)]
+        pub fn vault_cancel_global_params_update(&mut self) -> Result<()> {
+            self.forward_vault_cancel_global_params_update()
         }
 
         /// Pauses the vault; council-only (operational/emergency halt).
@@ -510,6 +698,104 @@ mod governance {
             self.forward_auction_set_admin(admin)
         }
 
+        // ----- Lending Pool: maintainer-gated (governing/config) -----
+
+        #[ink(message)]
+        pub fn pool_set_approved_netuid(&mut self, netuid: u16, approved: bool) -> Result<()> {
+            self.forward_pool_set_approved_netuid(netuid, approved)
+        }
+
+        #[ink(message)]
+        pub fn pool_set_alpha_params(
+            &mut self,
+            netuid: u16,
+            config: AlphaMarketParamsConfig,
+        ) -> Result<()> {
+            self.forward_pool_set_alpha_params(netuid, config)
+        }
+
+        #[ink(message)]
+        pub fn pool_cancel_alpha_params_update(&mut self, netuid: u16) -> Result<()> {
+            self.forward_pool_cancel_alpha_params_update(netuid)
+        }
+
+        #[ink(message)]
+        pub fn pool_set_market_params(
+            &mut self,
+            market_id: u8,
+            config: InterestRateParamsConfig,
+        ) -> Result<()> {
+            self.forward_pool_set_market_params(market_id, config)
+        }
+
+        #[ink(message)]
+        pub fn pool_cancel_market_params_update(&mut self, market_id: u8) -> Result<()> {
+            self.forward_pool_cancel_market_params_update(market_id)
+        }
+
+        #[ink(message)]
+        pub fn pool_set_global_params(&mut self, config: PoolGlobalParamsConfig) -> Result<()> {
+            self.forward_pool_set_global_params(config)
+        }
+
+        #[ink(message)]
+        pub fn pool_cancel_global_params_update(&mut self) -> Result<()> {
+            self.forward_pool_cancel_global_params_update()
+        }
+
+        #[ink(message)]
+        pub fn pool_update_platform(&mut self, new_platform: AccountId) -> Result<()> {
+            self.forward_pool_update_platform(new_platform)
+        }
+
+        #[ink(message)]
+        pub fn pool_update_treasury(&mut self, new_treasury: AccountId) -> Result<()> {
+            self.forward_pool_update_treasury(new_treasury)
+        }
+
+        #[ink(message)]
+        pub fn pool_update_oracle_address(&mut self, new_oracle: AccountId) -> Result<()> {
+            self.forward_pool_update_oracle_address(new_oracle)
+        }
+
+        #[ink(message)]
+        pub fn pool_update_ltoken_address(
+            &mut self,
+            market_id: u8,
+            new_ltoken: AccountId,
+        ) -> Result<()> {
+            self.forward_pool_update_ltoken_address(market_id, new_ltoken)
+        }
+
+        #[ink(message)]
+        pub fn pool_update_pool_hotkey(
+            &mut self,
+            new_hotkey: AccountId,
+            netuids: Vec<u16>,
+        ) -> Result<()> {
+            self.forward_pool_update_pool_hotkey(new_hotkey, netuids)
+        }
+
+        #[ink(message)]
+        pub fn pool_claim_surplus_tusdt(&mut self, amount: Balance) -> Result<()> {
+            self.forward_pool_claim_surplus_tusdt(amount)
+        }
+
+        #[ink(message)]
+        pub fn pool_transfer_native_to_treasury(&mut self) -> Result<()> {
+            self.forward_pool_transfer_native_to_treasury()
+        }
+
+        #[ink(message)]
+        pub fn pool_unpause(&mut self) -> Result<()> {
+            self.forward_pool_unpause()
+        }
+
+        #[ink(message)]
+        pub fn pool_update_maintainer(&mut self, new_maintainer: AccountId) -> Result<()> {
+            self.forward_pool_update_maintainer(new_maintainer)
+        }
+
         /// Returns the current governance parameters.
         #[ink(message)]
         pub fn params(&self) -> GovernanceParams {
@@ -552,18 +838,8 @@ mod governance {
             snapshot_block: u32,
         ) -> Result<u64> {
             self.ensure_council()?;
-            let epoch = self
-                .current_epoch
-                .checked_add(1)
-                .ok_or(Error::ArithmeticError)?;
-            self.snapshots.insert(
-                epoch,
-                &Snapshot {
-                    root,
-                    circulating_supply,
-                    snapshot_block,
-                },
-            );
+            let epoch = self.current_epoch.checked_add(1).ok_or(Error::ArithmeticError)?;
+            self.snapshots.insert(epoch, &Snapshot { root, circulating_supply, snapshot_block });
             self.current_epoch = epoch;
             self.env().emit_event(SnapshotSubmitted {
                 epoch,
@@ -636,11 +912,7 @@ mod governance {
         /// Submits a new proposal. Only council members may submit. Proposals are
         /// accepted during the configured day-of-month window (UTC, inclusive).
         #[ink(message)]
-        pub fn submit_proposal(
-            &mut self,
-            cid: String,
-            kind: ProposalKind,
-        ) -> Result<u64> {
+        pub fn submit_proposal(&mut self, cid: String, kind: ProposalKind) -> Result<u64> {
             // Only council members may submit proposals.
             self.ensure_council()?;
 
@@ -669,13 +941,9 @@ mod governance {
 
             let proposer = self.env().caller();
 
-            let id = self
-                .proposal_count
-                .checked_add(1)
-                .ok_or(Error::ArithmeticError)?;
-            let voting_ends_at = now
-                .checked_add(self.params.voting_period_ms)
-                .ok_or(Error::ArithmeticError)?;
+            let id = self.proposal_count.checked_add(1).ok_or(Error::ArithmeticError)?;
+            let voting_ends_at =
+                now.checked_add(self.params.voting_period_ms).ok_or(Error::ArithmeticError)?;
 
             let proposal = Proposal {
                 id,
@@ -693,11 +961,7 @@ mod governance {
             self.proposals.insert(id, &proposal);
             self.proposal_count = id;
 
-            self.env().emit_event(ProposalSubmitted {
-                proposal_id: id,
-                proposer,
-                voting_ends_at,
-            });
+            self.env().emit_event(ProposalSubmitted { proposal_id: id, proposer, voting_ends_at });
 
             Ok(id)
         }
@@ -717,10 +981,7 @@ mod governance {
             multiplier_bps: u32,
             proof: Vec<MerkleHash>,
         ) -> Result<()> {
-            let mut proposal = self
-                .proposals
-                .get(proposal_id)
-                .ok_or(Error::ProposalNotFound)?;
+            let mut proposal = self.proposals.get(proposal_id).ok_or(Error::ProposalNotFound)?;
             if proposal.status != ProposalStatus::Active {
                 return Err(Error::ProposalNotActive);
             }
@@ -736,10 +997,7 @@ mod governance {
             }
 
             // Verify the caller's leaf against the snapshot the proposal is bound to.
-            let snapshot = self
-                .snapshots
-                .get(proposal.snapshot_epoch)
-                .ok_or(Error::NoSnapshot)?;
+            let snapshot = self.snapshots.get(proposal.snapshot_epoch).ok_or(Error::NoSnapshot)?;
             let leaf = leaf_hash(coldkey, hotkey, balance, multiplier_bps);
             if !verify_merkle_proof(&proof, snapshot.root, leaf) {
                 return Err(Error::InvalidProof);
@@ -751,41 +1009,24 @@ mod governance {
             }
 
             if support {
-                proposal.yes = proposal
-                    .yes
-                    .checked_add(weight)
-                    .ok_or(Error::ArithmeticError)?;
+                proposal.yes = proposal.yes.checked_add(weight).ok_or(Error::ArithmeticError)?;
             } else {
-                proposal.no = proposal
-                    .no
-                    .checked_add(weight)
-                    .ok_or(Error::ArithmeticError)?;
+                proposal.no = proposal.no.checked_add(weight).ok_or(Error::ArithmeticError)?;
             }
             // Track raw balance participation for the quorum (in circulating-supply units).
-            proposal.voted_balance = proposal
-                .voted_balance
-                .checked_add(balance)
-                .ok_or(Error::ArithmeticError)?;
+            proposal.voted_balance =
+                proposal.voted_balance.checked_add(balance).ok_or(Error::ArithmeticError)?;
             self.proposals.insert(proposal_id, &proposal);
             self.has_voted.insert(key, &());
 
-            self.env().emit_event(Voted {
-                proposal_id,
-                coldkey,
-                hotkey,
-                support,
-                weight,
-            });
+            self.env().emit_event(Voted { proposal_id, coldkey, hotkey, support, weight });
             Ok(())
         }
 
         /// Closes voting and decides the outcome. Permissionless; only callable after `voting_ends_at`.
         #[ink(message)]
         pub fn finalize(&mut self, proposal_id: u64) -> Result<()> {
-            let mut proposal = self
-                .proposals
-                .get(proposal_id)
-                .ok_or(Error::ProposalNotFound)?;
+            let mut proposal = self.proposals.get(proposal_id).ok_or(Error::ProposalNotFound)?;
             if proposal.status != ProposalStatus::Active {
                 return Err(Error::ProposalNotActive);
             }
@@ -796,10 +1037,7 @@ mod governance {
 
             // Quorum is measured by raw balance that voted (same units as circulating supply);
             // the approval ratio is weighted by voting power (yes / (yes + no)).
-            let total = proposal
-                .yes
-                .checked_add(proposal.no)
-                .ok_or(Error::ArithmeticError)?;
+            let total = proposal.yes.checked_add(proposal.no).ok_or(Error::ArithmeticError)?;
             let quorum_met = proposal.voted_balance >= self.quorum(proposal.snapshot_epoch);
             let new_status = if !quorum_met || total == 0 {
                 ProposalStatus::Rejected
@@ -821,34 +1059,22 @@ mod governance {
             let no = proposal.no;
             self.proposals.insert(proposal_id, &proposal);
 
-            self.env().emit_event(ProposalFinalized {
-                proposal_id,
-                status: new_status,
-                yes,
-                no,
-            });
+            self.env().emit_event(ProposalFinalized { proposal_id, status: new_status, yes, no });
             Ok(())
         }
 
         /// Executes a passed proposal. For Funding, calls `treasury.release(...)`. Permissionless.
         #[ink(message)]
         pub fn execute(&mut self, proposal_id: u64) -> Result<()> {
-            let mut proposal = self
-                .proposals
-                .get(proposal_id)
-                .ok_or(Error::ProposalNotFound)?;
+            let mut proposal = self.proposals.get(proposal_id).ok_or(Error::ProposalNotFound)?;
             match proposal.status {
-                ProposalStatus::Passed => {}
+                ProposalStatus::Passed => {},
                 ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
                 _ => return Err(Error::NotPassed),
             }
 
-            if let ProposalKind::Funding {
-                fund,
-                token_kind,
-                amount,
-                recipient,
-            } = proposal.kind.clone()
+            if let ProposalKind::Funding { fund, token_kind, amount, recipient } =
+                proposal.kind.clone()
             {
                 self.treasury
                     .release(fund, token_kind, amount, recipient)
@@ -862,6 +1088,7 @@ mod governance {
             Ok(())
         }
 
+        /// Checks that the caller is the current maintainer. Returns `NotMaintainer` otherwise.
         fn ensure_maintainer(&self) -> Result<()> {
             if self.env().caller() != self.maintainer {
                 return Err(Error::NotMaintainer);
@@ -869,6 +1096,8 @@ mod governance {
             Ok(())
         }
 
+        /// Checks that the caller is the election contract (address matched at construction).
+        /// Returns `NotElection` otherwise.
         fn ensure_election(&self) -> Result<()> {
             if self.env().caller() != self.election.to_account_id() {
                 return Err(Error::NotElection);
@@ -876,6 +1105,7 @@ mod governance {
             Ok(())
         }
 
+        /// Checks that the caller is a seated council member. Returns `NotCouncil` otherwise.
         fn ensure_council(&self) -> Result<()> {
             if !self.council.contains(&self.env().caller()) {
                 return Err(Error::NotCouncil);

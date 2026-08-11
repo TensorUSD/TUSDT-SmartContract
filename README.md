@@ -1,13 +1,16 @@
 # TUSDT Contracts Workspace
 
-Ink! contracts for a collateralized TUSDT system with vault borrowing, interest accrual, and
-liquidation auctions, plus on-chain governance and a treasury that books protocol fees.
+Ink! contracts for a collateralized TUSDT system with vault borrowing, a lending/borrowing pool,
+liquidation auctions, and on-chain governance plus a treasury that books protocol fees.
 
-The contracts split into two layers:
+The contracts split into three layers:
 
-- **Protocol** — `tusdt-erc20` (token), `tusdt-vault` (CDP borrowing/liquidation), `tusdt-auction`
-  (liquidation auctions), `tusdt-oracle` (collateral pricing). The vault owns the token/auction/oracle
-  instances it creates.
+- **Protocol** — `tusdt-erc20` (token, multi-minter), `tusdt-vault-alpha` (CDP borrowing/liquidation
+  backed by subnet alpha), `tusdt-lending-pool` (TAO/TUSDT lending with alpha collateral, lToken
+  receipt tokens, utilization-based interest rates), `tusdt-auction` (ascending-bid liquidation
+  auctions for the vault), `tusdt-oracle` (collateral pricing).
+  The vault owns the token/auction/oracle instances it creates; the lending pool spawns its own lToken
+  children.
 - **Governance & treasury** — `tusdt-governance` (token-holder proposals plus a maintainer/council
   authority that steers the protocol contracts) and `tusdt-treasury` (per-fund accounting for fees,
   released only by governance).
@@ -39,7 +42,8 @@ Build contract artifacts (`.contract`, `.wasm`, metadata):
 cargo contract build --manifest-path contracts/tusdt-erc20/Cargo.toml --release
 cargo contract build --manifest-path contracts/tusdt-auction/Cargo.toml --release
 cargo contract build --manifest-path contracts/tusdt-oracle/Cargo.toml --release
-cargo contract build --manifest-path contracts/tusdt-vault/Cargo.toml --release
+cargo contract build --manifest-path contracts/tusdt-vault-alpha/Cargo.toml --release
+cargo contract build --manifest-path contracts/tusdt-lending-pool/Cargo.toml --release
 cargo contract build --manifest-path contracts/tusdt-treasury/Cargo.toml --release
 cargo contract build --manifest-path contracts/tusdt-governance/Cargo.toml --release
 cargo contract build --manifest-path contracts/tusdt-election/Cargo.toml --release
@@ -47,10 +51,34 @@ cargo contract build --manifest-path contracts/tusdt-election/Cargo.toml --relea
 
 Artifacts are produced in `target/ink/`.
 
+## Lint, Format & Test
+
+```bash
+# Format all Rust source files
+cargo fmt -- --check
+
+# Lint with clippy (deny warnings)
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Auto-fix formatting
+cargo fmt
+
+# Run all tests across the workspace
+cargo test --workspace
+
+# Run a single contract's tests
+cargo test -p tusdt-vault-alpha
+
+# Run a single named test with output
+cargo test -p tusdt-vault-alpha <test_name> -- --nocapture
+```
+
+CI gate: `cargo fmt -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace`
+
 ## Contract Tooling (`tools/`)
 
 Shared deployment scripts and on-chain tests live in an isolated TypeScript subproject under `tools/`.
-The current iteration exposes upload support for `erc20`, `auction`, `oracle`, and `vault`, plus a single `vault` deployment entrypoint that instantiates the whole runtime flow. The `treasury` and `governance` contracts are not yet scripted here — build and deploy them with `cargo contract` directly (see below).
+The current iteration exposes upload support for `erc20`, `auction`, `oracle`, and `vault-alpha`, plus a single `vault-alpha` deployment entrypoint. The `treasury`, `governance`, and `election` upload scripts are also available.
 
 Setup:
 
@@ -79,41 +107,47 @@ yarn erc20:upload
 yarn auction:upload
 yarn oracle:upload
 yarn vault:upload
-yarn vault:deploy --token-code-hash <TOKEN_CODE_HASH> --auction-code-hash <AUCTION_CODE_HASH> --oracle-code-hash <ORACLE_CODE_HASH>
+yarn vault:deploy --token-code-hash <TOKEN_CODE_HASH> --auction-code-hash <AUCTION_CODE_HASH> --oracle-code-hash <ORACLE_CODE_HASH> --treasury-address <SS58> --oracle-netuid <NETUID> --hotkey <SS58>
 yarn test:oracle
 ```
 
 ## Deployment (Recommended Order)
 
-`tusdt-vault::new` takes a `treasury` address plus the **code hash** of the token, auction, and
-oracle contracts, then instantiates all three internally. Because the vault *creates* the TUSDT
-token, the token address is not known until the vault exists — and the treasury needs that token
-address — so the treasury is deployed after the vault and wired in via `update_treasury`.
+`tusdt-vault-alpha::new` takes a `treasury` address, code hashes for token/auction/oracle,
+`oracle_netuid` (subnet for oracle reporters), and `hotkey` (staking hotkey for alpha collateral).
+The vault instantiates the token, auction, and oracle internally. Because the vault *creates* the
+TUSDT token, the token address is not known until the vault exists — deploy the treasury after the
+vault and wire it in via `update_treasury`.
 
 1. Upload ERC20 code (`tusdt-erc20`) and capture code hash.
 2. Upload Auction code (`tusdt-auction`) and capture code hash.
 3. Upload Oracle code (`tusdt-oracle`) and capture code hash.
-4. Instantiate Vault (`tusdt-vault::new`) with:
+4. Instantiate Alpha Vault (`tusdt-vault-alpha::new`) with:
    - `treasury` — a placeholder address for now (e.g. the deployer); reassigned in step 7.
    - `token_code_hash`
    - `auction_code_hash`
    - `oracle_code_hash`
+   - `oracle_netuid` — subnet whose registered neurons may submit oracle prices
+   - `hotkey` — staking hotkey for alpha collateral deposits
 
-   The deployer becomes the initial governance of the vault, and (via instantiation) of the auction
-   and oracle.
+   The deployer becomes the initial governance of the vault, auction, and oracle.
 5. Read the token / auction / oracle addresses from the vault (`get_token_address`,
    `get_auction_address`, `get_oracle_address`).
-6. Instantiate Treasury (`tusdt-treasury::new`) with the vault's TUSDT token address. The deployer
-   becomes the treasury's initial governance.
-7. Point the vault's fee recipient at the treasury: `tusdt-vault::update_treasury(treasury)`.
-8. Upload Election code (`tusdt-election`) and capture code hash.
-9. Instantiate Governance (`tusdt-governance::new`) with the `treasury`, `vault`, `auction`, `oracle`
-   addresses, the initial `maintainer` (typically the subnet owner), and the `election_code_hash`.
-   Governance **instantiates the election itself** in its constructor.
-10. Hand control to the governance contract:
-    - `tusdt-treasury::set_governance(governance)` — only governance may release funds afterward.
-    - `tusdt-vault::update_governance(governance)` — propagates the role to the auction and oracle too.
-11. Seat the council: as the maintainer, call `tusdt-governance::set_council([c1..c5])`.
+6. Instantiate Treasury (`tusdt-treasury::new`) with the vault's TUSDT token address.
+7. Wire the vault's fee recipient: `tusdt-vault-alpha::update_treasury(treasury)`.
+8. Add vault as minter on ERC20: `tusdt-erc20::add_minter(vault_address)`.
+9. Upload Election code (`tusdt-election`) and capture code hash.
+10. Instantiate Governance (`tusdt-governance::new`) with the `treasury`, `vault`, `auction`, `oracle`
+    addresses, initial `maintainer`, and `election_code_hash`.
+11. Hand control to the governance contract:
+    - `tusdt-treasury::set_governance(governance)`
+    - `tusdt-vault-alpha::update_governance(governance)` — propagates to auction and oracle too.
+12. Seat the council: `tusdt-governance::set_council([c1..c5])`.
+13. Approve target subnets: `tusdt-governance::vault_set_approved_netuid(N, true)` for each subnet.
+14. Configure per-netuid params: `tusdt-governance::vault_set_contract_params(N, params)` for each
+    subnet (24h timelock, then anyone calls `tusdt-vault-alpha::execute_contract_params_update(N)`).
+15. (Optional) Adjust global params: `tusdt-governance::vault_set_global_params(config)` (24h
+    timelock, then anyone calls `tusdt-vault-alpha::execute_global_params_update()`).
 
 After step 11 the protocol contracts are steered exclusively by the governance contract, and within
 governance the maintainer/council split (see [Governance & Treasury](#governance--treasury)) applies.
@@ -134,9 +168,9 @@ cargo contract upload \
   --suri //Alice --url ws://127.0.0.1:9944
 
 cargo contract instantiate \
-  --manifest-path contracts/tusdt-vault/Cargo.toml \
+  --manifest-path contracts/tusdt-vault-alpha/Cargo.toml \
   --constructor new \
-  --args <TREASURY_OR_PLACEHOLDER> <ERC20_CODE_HASH> <AUCTION_CODE_HASH> <ORACLE_CODE_HASH> \
+  --args <TREASURY_OR_PLACEHOLDER> <ERC20_CODE_HASH> <AUCTION_CODE_HASH> <ORACLE_CODE_HASH> <ORACLE_NETUID> <HOTKEY> <ALPHA_PRICE_NETUID> \
   --suri //Alice --url ws://127.0.0.1:9944
 ```
 
@@ -166,16 +200,152 @@ where a TS script already exists. The current e2e test suite is intentionally or
 deployment script entrypoint is `vault:deploy`, and the treasury/governance/election contracts have
 no TS scripts yet — deploy and wire them with `cargo contract` as shown.
 
+## Lending Pool
+
+The lending pool (`tusdt-lending-pool`) is a standalone protocol contract that enables:
+
+- **Supply TAO/TUSDT** to earn variable yield (receive lTAO/lTUSDT receipt tokens)
+- **Supply Alpha collateral** (one market per approved subnet) to gain borrowing power
+- **Borrow TAO/TUSDT** against Alpha collateral with health factor checks
+- **Direct liquidation** when health factor drops below 1.0 (close factor 50%, configurable bonus)
+
+### Deployment (Lending Pool)
+
+1. Upload the lending pool code and capture the code hash:
+   ```bash
+   cargo contract upload \
+     --manifest-path contracts/tusdt-lending-pool/Cargo.toml \
+     --suri //Alice --url ws://127.0.0.1:9944
+   ```
+2. Instantiate the pool with the existing treasury, TUSDT token, oracle, lToken code hash (reuses
+   `tusdt-erc20` code), and a staking hotkey:
+   ```bash
+   cargo contract instantiate \
+     --manifest-path contracts/tusdt-lending-pool/Cargo.toml \
+     --constructor new \
+     --args <TREASURY_ADDRESS> <TUSDT_TOKEN_ADDRESS> <ORACLE_ADDRESS> \
+            <LTOKEN_CODE_HASH> <POOL_HOTKEY> \
+     --suri //Alice --url ws://127.0.0.1:9944
+   ```
+   The pool spawns two child lToken instances (lTAO for market 0, lTUSDT for market 1).
+3. Read the spawned lToken addresses:
+   - `pool.get_ltoken_address(0)` → lTAO
+   - `pool.get_ltoken_address(1)` → lTUSDT
+4. Approve alpha markets: `pool.add_alpha_market(netuid, params)` for each target subnet.
+5. (Optional) Wire governance: `pool.update_governance(governance_address)`, then call
+   `governance.update_pool_address(pool_address)` to record the pool in the governance contract.
+6. (Optional) Adjust interest rate params, alpha params, or global params via timelocked updates.
+
+### Lending pool lifecycle
+
+1. **Supply**: Users deposit TAO (payable) or TUSDT (`transfer_from`) → receive lTAO/lTUSDT at the
+   current exchange rate. Exchange rate starts at 1.0 and grows as interest accrues.
+2. **Supply Alpha collateral**: Users call `deposit_alpha(netuid, amount)` → atomically pulls the
+   caller's alpha stake into the pool's coldkey via chain extension func 25 (same mechanism as the
+   vault). One market per approved subnet.
+3. **Borrow**: Users with alpha collateral can borrow TAO or TUSDT. Borrowing power is:
+   `collateral_value × collateral_factor − existing_debt`. Health factor must stay ≥ 1.0.
+4. **Repay**: Repay TAO (payable) or TUSDT (`transfer_from`). Repaid assets stay as pool liquidity —
+   no burn. Interest accrues continuously while borrowed.
+5. **Withdraw collateral**: Only allowed when the account remains healthy after withdrawal. Uses
+   chain extension func 6 (`transfer_stake`) to return stake to the user's coldkey.
+6. **Liquidate**: Permissionless. When `health_factor < 1.0`, any account can repay a portion of the
+   borrower's debt (up to 50% close factor) and receive discounted alpha collateral (configurable
+   bonus, default 5%).
+
+### Interest rate model
+
+- **Utilization-based** 2-zone curve: `U = total_debt / (total_debt + cash)`.
+  - Zone 1 (U ≤ optimal): `base_rate + slope1 × U / optimal`
+  - Zone 2 (U > optimal): `base_rate + slope1 + slope2 × (U − optimal) / (1 − optimal)`
+- **Discrete hourly compounding** via `checked_pow` — same primitives as the vault's former interest
+  model.
+- **Reserve factor** (default 20%): share of borrower interest sent to the protocol treasury.
+  `supplier_rate = borrow_rate × U × (1 − reserve_factor)`.
+- **lToken exchange rate**: `underlying = ltoken_balance × exchange_rate`. Exchange rate starts at
+  1.0 and grows monotonically as supplier interest accrues. Non-rebasing (Compound-style).
+
+### Alpha yield performance fee
+
+Alpha collateral continues earning native staking yield while supplied. A permissionless
+`claim_alpha_yield(netuid)` function:
+
+1. Computes excess = actual available stake − booked collateral (accounting for yield index).
+2. Splits 25% → treasury (unstaked to TAO via `remove_stake`, transferred as native TAO).
+3. Credits 75% → per-netuid yield index, proportionally increasing all borrowers' effective collateral.
+
+### Default parameters
+
+| Asset | base_rate | slope1 | slope2 | optimal_util | reserve_factor |
+|-------|-----------|--------|--------|-------------|----------------|
+| TAO   | 0%        | 4%     | 96%    | 80%         | 20%            |
+| TUSDT | 0%        | 3%     | 97%    | 80%         | 20%            |
+
+| Alpha param         | Default |
+|---------------------|---------|
+| Collateral factor   | 50%     |
+| Liquidation threshold | 60%   |
+| Liquidation bonus   | 5%      |
+
+| Global param        | Default |
+|---------------------|---------|
+| Close factor        | 50%     |
+| Performance fee     | 25%     |
+| Max oracle age      | 30 min  |
+
+### Useful pool read methods
+
+- `get_market_state(market_id)` → `MarketState` (total_supplied, total_debt, borrow_index, exchange_rate, reserve_accrued)
+- `get_position(market_id, user)` → `Position` (ltoken_balance, scaled_debt, alpha_principal)
+- `get_exchange_rate(market_id)`, `get_borrow_index(market_id)`, `get_utilization(market_id)`
+- `get_borrow_rate(market_id)`, `get_supply_rate(market_id)` — current annualized rates
+- `get_underlying_balance(market_id, user)` → underlying value of lToken position
+- `get_user_debt(market_id, user)` → current debt in underlying units
+- `get_collateral_value_tusdt(user)`, `get_debt_value_tusdt(user)`, `get_health_factor(user)`
+- `get_available_borrow_tusdt(user)` → remaining borrowing capacity in TUSDT
+- `get_alpha_markets()` → `Vec<(netuid, AlphaMarketParams)>` — list all approved alpha markets
+- `get_user_alpha_position(user, netuid)` → alpha principal for a specific subnet
+- `get_alpha_yield_index(netuid)`, `get_netuid_total_collateral(netuid)`
+- `paused()`, `governance()`, `treasury()`, `platform()`, `get_pool_hotkey()`, `get_oracle_address()`
+- Paginated: `get_positions(user, page)`, `get_all_positions(page)` (10 per page)
+
+### Governance forwarders
+
+After wiring (`pool.update_governance(governance)`), the governance contract can steer the pool:
+
+| Forwarder | Gated by | Purpose |
+|-----------|----------|---------|
+| `pool_set_approved_netuid(netuid, approved)` | maintainer | Add/remove alpha collateral markets |
+| `pool_set_market_params(market, config)` / cancel | maintainer | Schedule timelocked interest rate changes |
+| `pool_set_alpha_params(netuid, config)` / cancel | maintainer | Schedule timelocked alpha param changes |
+| `pool_set_global_params(config)` / cancel | maintainer | Schedule timelocked global param changes |
+| `pool_pause` | council | Emergency halt (single member) |
+| `pool_unpause` | maintainer | Resume operations |
+| `pool_update_pool_hotkey(new_hotkey, netuids)` | maintainer | Migrate alpha stake to new hotkey |
+
+All param changes follow the 24h timelock: schedule (governance) → execute (permissionless, time-gated)
+→ cancel (governance). Params can be read at any time via `get_pending_*_params_update`.
+
 ## Working Flow
 
-### 1) Vault lifecycle
+### 1) Vault lifecycle (atomic pull deposit)
 
-1. User creates vault with native collateral: `create_vault` (payable).
-2. User adds collateral: `add_collateral` (payable).
-3. User borrows token: `borrow_token`.
-4. User repays token: `repay_token`.
-5. Anyone can trigger vault debt accrual: `accrue_interest(owner, vault_id)`.
-6. User releases collateral (only when debt is zero): `release_collateral`.
+1. User stakes alpha under the vault's hotkey (if not already staked there) — the pull keeps the hotkey.
+2. User creates vault: `create_alpha_vault(amount, netuid)` — the contract atomically pulls `amount`
+   of the caller's alpha into its own coldkey via the caller-forwarded `caller_transfer_stake`
+   chain extension (function 25) and opens the CDP in the same message. Deposits are always
+   attributed to the caller; no separate intent or `transfer_stake` extrinsic is needed.
+   Requires the subnet's `TransferToggle` to be on and the amount to exceed the chain's minimum
+   stake (0.002 TAO equivalent); failures revert cleanly with `StakeTransferFailed`.
+3. User borrows token: `borrow_token(vault_id, amount)`.
+4. User repays token: `repay_token(vault_id, amount)`.
+5. Anyone can trigger debt accrual: `accrue_interest(owner, vault_id)`.
+6. User adds more alpha collateral: `add_alpha_collateral(vault_id, amount)` — pulls exactly
+   `amount` from the caller, same mechanism as vault creation.
+7. User releases alpha collateral: `release_alpha_collateral(vault_id, amount, dest_coldkey)` — returns stake via chain extension.
+
+Deposit messages are EOA-facing: a contract calling the vault would pull its own stake, since the
+chain extension forwards the immediate caller's origin.
 
 ### 2) Interest model
 
@@ -200,22 +370,33 @@ the deployer; after wiring (deployment steps 7 & 9) it is the **governance contr
 them through governance's forwarders rather than calling the protocol contracts directly. See
 [Governance & Treasury](#governance--treasury) for who may invoke what.
 
-Risk params (the vault's `set_contract_params`) are applied behind a timelock:
-`collateral_ratio`, `liquidation_ratio`, `interest_rate`, `liquidation_fee`, `transaction_fee`,
-`borrow_cap`, per-vault and total collateral caps, `auction_duration_ms`, `max_oracle_age_ms`.
+Risk params split into two scopes, both applied behind a 24h timelock:
+
+- **Per-netuid** — governance schedules `set_contract_params(netuid, params)` per subnet. Params:
+  `collateral_ratio`, `liquidation_ratio`, `interest_rate`, `liquidation_fee` (all basis points).
+  Falls back to defaults for unconfigured netuids.
+- **Global (all netuids)** — governance schedules `set_global_params(config)`. Params:
+  `transaction_fee` (basis points), `auction_duration_ms`, `max_oracle_age_ms`.
+
+Governance also controls which subnets are accepted via `set_approved_netuid(netuid, approved)`
+(exposed after hand-off through the `vault_set_approved_netuid` forwarder).
 
 Oracle reporter access (`set_reporter`) is managed by the oracle's validator; the validator and the
 max price deviation are governance-set. The active round is committed by the validator via
 `commit_round`; governance can also commit an emergency override price (see below).
 
-Default vault params:
+Default per-netuid params:
 
 - Collateral ratio: `150%`
 - Liquidation ratio: `120%`
-- Interest rate: `5% APR` (approximately `5.13% APY` under hourly compounding)
-- Liquidation fee: `1%`
-- Auction duration: `3_600_000` milliseconds
-- Max oracle age: `3_600_000` milliseconds
+- Interest rate: `10% APR` (approximately `10.52% APY` under hourly compounding)
+- Liquidation fee: `11%`
+
+Default global params:
+
+- Transaction fee: `0.3%` (30 bps)
+- Auction duration: `3_600_000` milliseconds (1 hour)
+- Max oracle age: `1_800_000` milliseconds (30 minutes)
 
 ## Governance & Treasury
 
@@ -247,9 +428,11 @@ governance:
 
 | Forwarder | Gated by | Target |
 | --- | --- | --- |
-| `vault_set_contract_params`, `vault_cancel_contract_params_update` | maintainer | vault (timelocked params) |
-| `vault_update_treasury`, `vault_update_platform`, `vault_unpause` | maintainer | vault |
-| `vault_pause` | **council** (fast emergency halt) | vault |
+| `vault_set_contract_params(netuid, params)`, `vault_cancel_contract_params_update(netuid)` | maintainer | vault-alpha (per-netuid timelocked params) |
+| `vault_set_global_params(config)`, `vault_cancel_global_params_update()` | maintainer | vault-alpha (global timelocked params: fee, auction duration, oracle age) |
+| `vault_set_approved_netuid(netuid, approved)` | maintainer | vault-alpha (accepted collateral subnets) |
+| `vault_update_treasury`, `vault_update_platform`, `vault_unpause` | maintainer | vault-alpha |
+| `vault_pause` | **council** (fast emergency halt) | vault-alpha |
 | `oracle_set_validator`, `oracle_set_max_price_deviation` | maintainer | oracle |
 | `oracle_commit_round` | maintainer (emergency price — drives liquidations) | oracle |
 | `auction_set_admin` | maintainer | auction |
@@ -267,19 +450,27 @@ governance until `set_governance` hands control to the governance contract.
 
 ## Useful Read Methods
 
-- Vault: `get_vault`, `get_total_debt`, `get_contract_params`, `get_oracle_address`, `get_vaults`, `get_all_vaults`
+- Vault: `get_vault`, `get_total_debt`, `get_contract_params(netuid)`, `get_global_params()`, `is_approved_netuid(netuid)`, `get_oracle_address`, `get_vaults`, `get_all_vaults`
+- Oracle: `get_latest_price`, `get_current_round_summary`, `is_reporter`
+- Chain extension: `get_alpha_price(netuid)` — on-chain subnet alpha/TAO price (RAO-scaled by 1e9)
 - Oracle: `get_latest_price`, `get_current_round_summary`, `is_reporter`
 - Auction: `get_auction`, `get_active_vault_auction`, `get_bid`, `get_all_auctions`, `get_active_auctions`
 - Token: `balance_of`, `allowance`, `total_supply`
 - Governance: `maintainer`, `election`, `netuid`, `council`, `is_council`, `params`, `current_epoch`, `get_snapshot`, `quorum`, `proposal_count`, `get_proposal`, `has_voted`
 - Treasury: `governance`, `token`, `fund_balance_tusdt`, `fund_balance_native`
-
 ## Notes
 
-- `tusdt-vault` owns the token and auction instances it creates.
-- `tusdt-vault` reads collateral pricing from the external oracle contract.
-- Borrowing mints TUSDT to borrower.
-- Repayment and settlement burn TUSDT.
+- `tusdt-vault-alpha` owns the token and auction instances it creates; `tusdt-lending-pool` spawns its
+  own lToken children (lTAO, lTUSDT) reusing the `tusdt-erc20` code hash.
+- Alpha collateral is verified via chain extension (`get_stake_info`). Both the vault and lending pool
+  act as coldkeys for staked alpha, using the caller-forwarded `caller_transfer_stake` (func 25) for
+  atomic pull deposits.
+- Pricing: `TUSDT_per_alpha = oracle_TUSDT_per_TAO * (get_alpha_price(netuid) / 1_000_000_000)`.
+- Borrowing from the vault mints TUSDT to borrower; the lending pool transfers existing TUSDT (no mint
+  on borrow — pool liquidity comes from suppliers).
+- Vault repayment and settlement burn TUSDT; lending pool repayment keeps TUSDT as pool cash.
 - Protocol fees accrue to `tusdt-treasury`; only `tusdt-governance` can release them.
-- After wiring, the vault/auction/oracle are governed by `tusdt-governance`; the maintainer and
+- After wiring, the vault/auction/oracle/pool are governed by `tusdt-governance`; the maintainer and
   council act through its forwarders rather than calling those contracts directly.
+- The lending pool uses direct bonus-based liquidation (not auctions). The existing `tusdt-auction`
+  contract serves the vault's liquidation path only.

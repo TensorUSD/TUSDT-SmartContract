@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 //! Custom ink! environment for the tUSDT protocol. Defines [`CustomEnvironment`] with
-//! `Balance = u64`, `Timestamp = u64` (Unix ms), and `BlockNumber = u32`, plus a 16-function
+//! `Balance = u64`, `Timestamp = u64` (Unix ms), and `BlockNumber = u32`, plus an 18-function
 //! chain extension (id `0x1000`) exposing Bittensor subnet staking operations and alpha price
 //! queries. All protocol contracts use this environment via
 //! `#[ink::contract(env = tusdt_env::CustomEnvironment)]`.
@@ -9,7 +9,7 @@ use parity_scale_codec::Compact;
 
 /// Custom ink! environment used by all tUSDT protocol contracts. Differs from `DefaultEnvironment`
 /// in using `Balance = u64`, `Timestamp = u64` (Unix epoch milliseconds), and `BlockNumber = u32`,
-/// with a 16-function chain extension for Bittensor subnet operations.
+/// with an 18-function chain extension for Bittensor subnet operations.
 #[derive(Debug, Clone)]
 pub struct CustomEnvironment;
 
@@ -48,11 +48,14 @@ pub enum FunctionId {
     RemoveProxyV1 = 14,
     /// Reads the alpha price for a subnet (function 15).
     GetAlphaPriceV1 = 15,
+    /// Reads stake availability (total, locked, available) for a coldkey on a subnet (function 36).
+    GetStakeAvailabilityV1 = 36,
 }
 
-/// The 16-function chain extension at extension id `0x1000`. Exposes Bittensor subnet staking
-/// operations (add/remove/move/swap stake, stake limits, proxies, auto-stake) and alpha price
-/// queries. Functions 0 and 15 are read-only; functions 1–14 are write operations.
+/// The 18-function chain extension at extension id `0x1000`. Exposes Bittensor subnet staking
+/// operations (add/remove/move/swap stake, stake limits, proxies, auto-stake, caller-forwarded
+/// stake transfers) and alpha price queries. Functions 0, 15, and 36 are read-only;
+/// functions 1–14 and 25 are write operations.
 #[ink::chain_extension(extension = 0x1000)]
 pub trait RuntimeReadWrite {
     type ErrorCode = ReadWriteErrorCode;
@@ -103,6 +106,21 @@ pub trait RuntimeReadWrite {
     /// Transfers stake to a different coldkey.
     #[ink(function = 6)]
     fn transfer_stake(
+        destination_coldkey: <CustomEnvironment as ink::env::Environment>::AccountId,
+        hotkey: <CustomEnvironment as ink::env::Environment>::AccountId,
+        origin_netuid: u16,
+        destination_netuid: u16,
+        amount: u64,
+    );
+
+    /// Transfers alpha stake FROM the original caller's coldkey (caller-forwarded
+    /// origin, `CallerTransferStakeV1`) to `destination_coldkey`. Unlike
+    /// `transfer_stake` (function 6, which acts on the contract's own stake), the
+    /// runtime dispatches this with the signed origin of the account that invoked the
+    /// contract, so the contract can pull the caller's stake in the same message.
+    /// Args are identical to `transfer_stake`.
+    #[ink(function = 25)]
+    fn caller_transfer_stake(
         destination_coldkey: <CustomEnvironment as ink::env::Environment>::AccountId,
         hotkey: <CustomEnvironment as ink::env::Environment>::AccountId,
         origin_netuid: u16,
@@ -176,6 +194,14 @@ pub trait RuntimeReadWrite {
     /// Reads the current alpha price for the specified subnet.
     #[ink(function = 15)]
     fn get_alpha_price(netuid: u16) -> u64;
+
+    /// Reads stake availability for a coldkey on a given subnet. Returns the total stake,
+    /// locked (non-transferable) portion, and available (withdrawable) portion.
+    #[ink(function = 36)]
+    fn get_stake_availability(
+        coldkey: <CustomEnvironment as ink::env::Environment>::AccountId,
+        netuid: u16,
+    ) -> StakeAvailability;
 }
 
 /// Error codes returned by the chain extension. Status code 0 indicates success; 1 indicates
@@ -233,4 +259,19 @@ pub struct StakeInfo<AccountId> {
     pub drain: Compact<u64>,
     /// Whether the (hotkey, coldkey) pair is registered on the subnet.
     pub is_registered: bool,
+}
+
+/// Stake availability for a coldkey on a given subnet, returned by the chain extension's
+/// `get_stake_availability` function (function 36). Aggregates stake across all hotkeys
+/// for the specified coldkey on the given subnet.
+#[ink::scale_derive(Encode, Decode, TypeInfo)]
+pub struct StakeAvailability {
+    /// The subnet identifier.
+    pub netuid: u16,
+    /// The total alpha stake for this coldkey on the subnet.
+    pub total: u64,
+    /// The locked (non-withdrawable) portion of the stake.
+    pub locked: u64,
+    /// The available (withdrawable) portion of the stake.
+    pub available: u64,
 }

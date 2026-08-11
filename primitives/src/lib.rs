@@ -37,7 +37,10 @@ const BASIS_POINTS_DENOMINATOR: u128 = 10_000;
 pub struct Ratio(u128);
 
 impl Ratio {
-    /// Creates a `Ratio` from its raw `FixedU128` inner value.
+    /// Creates a `Ratio` from the raw `u128` inner value of a `FixedU128`. The
+    /// 18-decimal-place fixed-point scale means `from_inner(1_000_000_000_000_000_000)` is
+    /// equivalent to `from_integer(1)`. **Prefer [`from_integer`] for whole-number ratios**
+    /// — a raw inner of `1` represents ~1e-18, not 1.0.
     pub const fn from_inner(inner: u128) -> Self {
         Self(inner)
     }
@@ -105,9 +108,7 @@ impl Ratio {
 
     /// Multiplies this `Ratio` by another `Ratio`. Returns `None` on overflow.
     pub fn checked_mul(self, rhs: Self) -> Option<Self> {
-        self.as_fixed()
-            .checked_mul(&rhs.as_fixed())
-            .map(Self::from_fixed)
+        self.as_fixed().checked_mul(&rhs.as_fixed()).map(Self::from_fixed)
     }
 
     /// Returns the absolute difference between two `Ratio`s.
@@ -118,17 +119,13 @@ impl Ratio {
     /// Divides a `u128` value by this `Ratio` (`value / self`). Returns `None` on overflow or division by zero.
     pub fn checked_div_value(self, value: u128) -> Option<u128> {
         let value_fixed = FixedU128::checked_from_integer(value)?;
-        value_fixed
-            .checked_div(&self.as_fixed())?
-            .checked_mul_int(1_u128)
+        value_fixed.checked_div(&self.as_fixed())?.checked_mul_int(1_u128)
     }
 
     /// Divides this `Ratio` by a `u128` integer (`self / rhs`). Returns `None` on overflow.
     pub fn checked_div_int(self, rhs: u128) -> Option<Self> {
         let rhs_fixed = FixedU128::checked_from_integer(rhs)?;
-        self.as_fixed()
-            .checked_div(&rhs_fixed)
-            .map(Self::from_fixed)
+        self.as_fixed().checked_div(&rhs_fixed).map(Self::from_fixed)
     }
 
     /// Computes e^`self` using a 32-term Taylor series approximation. Returns `None` on overflow.
