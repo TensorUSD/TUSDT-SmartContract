@@ -6,6 +6,10 @@ then walks through the mechanics with the actual formulas and step-by-step user 
 
 > **Companion docs**: every error the contracts can return is catalogued in
 > [`../errors/`](../errors/index.md) — one page per contract.
+> **Worked examples**: step-by-step numeric walkthroughs of the money math (how much
+> you can borrow, when liquidation happens, how APY and interest accrue) live in
+> [`../calculations/`](../calculations/index.md) — one page for the vault and one for
+> the lending pool, every number recomputed against the contract test suites.
 
 ## The system at a glance
 
@@ -127,6 +131,7 @@ All amounts on-chain are integers — there are no floats in TUSDT.
 
 - New to the system? Start with [vault-alpha.md](vault-alpha.md), then
   [lending-pool.md](lending-pool.md).
+- Want the numbers worked out step by step? See [`../calculations/`](../calculations/index.md).
 - Hit an error? Look it up in [`../errors/`](../errors/index.md).
 - Building on top? See the workspace `README.md` for deployment order and the canonical
   architecture notes in `.claude/CLAUDE.md`.
