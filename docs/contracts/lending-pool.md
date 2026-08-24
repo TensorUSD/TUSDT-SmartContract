@@ -76,10 +76,14 @@ supply_growth = (1 + s_annual / 8760)^dt_hours
 Then the market accumulators advance:
 
 ```
-total_debt    ← borrow_growth · total_debt
+total_debt    ← floor(total_scaled_debt · new_borrow_index / 1e18)   # derived from the scaled total
 borrow_index  ← borrow_growth · borrow_index
 exchange_rate ← supply_growth · exchange_rate
 ```
+
+The market's face `total_debt` is **derived** from `total_scaled_debt` at the new index
+(Aave-style scaled-total accounting): interest accrues purely through index growth and
+the scaled total is never mutated by accrual.
 
 Rules: no accrual while `total_debt == 0`, and nothing accrues until a full hour has passed
 (`dt_hours == 0`). The clock advances **by whole hours only** (vault pattern): the sub-hour
@@ -119,7 +123,7 @@ Borrowing adds `scaled += ceil(amount / borrow_index)` and repaying subtracts
 (Aave's `rayDivUp` pattern), so a borrower's debt is never understated by a
 fractional rao and a partial repayment can never erase a position through
 rounding while a full repayment still clears it exactly. Repayments clamp:
-`repay_amount = min(amount, actual_debt, total_debt)` — you can never overpay
+`repay_amount = min(amount, actual_debt)` — you can never overpay
 (excess TAO is refunded; TUSDT overpayment is simply not pulled). A parallel
 `debt_principal` mapping tracks principal so `interest = debt − principal` is
 always readable (`get_user_debt_details`). The ceiling guarantees the market
