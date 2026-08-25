@@ -13,7 +13,7 @@ Prices arrive in **rounds**. Reporters submit into the *open* round (`current_ro
 Any account can try to report: `submit_price(price, metadata)` has no allowlist. Instead, eligibility is verified live against the chain extension (`submit_price`):
 
 1. `metadata.hot_key` must be non-zero, and the `(hotkey, coldkey=caller, netuid)` triplet must have a stake record on the governing subnet — otherwise `NotRegisteredInSubnet`.
-2. The neuron's alpha stake must exceed `min_submitter_stake` (default $10\,000\,000\,000$ rao = 10 TAO) — otherwise `InsufficientStake`.
+2. The neuron's alpha stake must exceed `min_submitter_stake` (default `10_000_000_000` rao = 10 TAO) — otherwise `InsufficientStake`.
 3. The price must be non-zero.
 
 Each coldkey holds **one slot per round**: resubmitting replaces your own submission (`replaced_existing`), up to `MAX_ROUND_SUBMISSIONS` (256) distinct reporters.
@@ -26,7 +26,9 @@ A non-override commit uses the **median** of the round's submissions (`compute_r
 
 Each commit (including a validator's override) must stay within the band around the last committed price (`ensure_within_deviation`):
 
-$$|candidate - latest| \le latest \times max\_price\_deviation$$
+```text
+|candidate − latest| ≤ latest × max_price_deviation
+```
 
 `max_price_deviation` is a `Ratio` (1e18 inner), default 1 000 bps (10%), settable only by governance. Violations revert with `PriceDeviationExceeded` (there is no latest-price check on the very first commit).
 
@@ -41,7 +43,7 @@ The oracle stores `committed_at` (block timestamp, ms) on every `PriceData`, but
 
 ### Price scale
 
-Prices are `tusdt_primitives::Ratio` — a 1e18 fixed-point value (inner `FixedU128`). A TUSDT price of 250 TAO is stored as $250 \times 10^{18}$. Always scale client-side displays by $10^{18}$.
+Prices are `tusdt_primitives::Ratio` — a 1e18 fixed-point value (inner `FixedU128`). A TUSDT price of 250 TAO is stored as `250 × 10^18`. Always scale client-side displays by `10^18`.
 
 ## User flow
 

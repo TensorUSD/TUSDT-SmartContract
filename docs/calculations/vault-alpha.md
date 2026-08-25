@@ -1,15 +1,14 @@
 # tusdt-vault-alpha — Calculation Guide
 
 Step-by-step numeric walkthroughs for the Alpha Vault (CDP engine): how much you can
-borrow, when liquidation happens, and what the auction looks like — worked out with the
-exact integer math the contract uses. Companion to the reference page
+borrow, when liquidation happens, and what the auction looks like — worked out in plain
+human-scale numbers. Companion to the reference page
 [`../contracts/vault-alpha.md`](../contracts/vault-alpha.md) and the
 [error catalog](../errors/vault-alpha.md).
 
 > **Verification**: every number on this page was recomputed with an independent Python
-> harness that reimplements the contract's fixed-point operations exactly and reproduces
-> every numeric pin in the contract test suite (`tests.rs`) — including
-> `max_borrow_allowed_spec_example`, `is_liquidatable_boundary`, and
+> script and matches the numeric pins in the contract test suite (`tests.rs`) —
+> including `max_borrow_allowed_spec_example`, `is_liquidatable_boundary`, and
 > `liquidation_min_bid_includes_fee`.
 
 ## Numbers and scales (read this first)
@@ -19,141 +18,164 @@ exact integer math the contract uses. Companion to the reference page
 | Balance / token amount | `u64`, 9 decimals | 1 TUSDT = 1,000,000,000 rao |
 | Internal `Ratio` (fixed-point) | 1e18 inner | 1.5 = 1,500,000,000,000,000,000 |
 | Parameter configs (external messages) | basis points | 15,000 bps = 150% |
-| Oracle price (TUSDT/TAO) | 1e18 Ratio | 200 TAO → inner 200 × 10¹⁸ |
-| Chain alpha price (`get_alpha_price`, ext fn 15) | rao, 1e9 per α | 377,277 rao = 0.000377277 TAO/α |
+| Oracle price (TUSDT/TAO) | 1e18 `Ratio` | 230 TUSDT/TAO |
+| Chain alpha price (`get_alpha_price`, ext fn 15) | rao, 1e9 per alpha | 3,000,000 rao = 0.003 TAO/alpha |
 
-Rounding rules used by the contract (all floor for positive values): `checked_mul_value`
-computes `floor(value × ratio / 1e18)`, `checked_div_value` computes
-`floor(value / ratio)`. **The vault has no interest**: debt = borrowed, repay 1:1
+The contract works entirely in integer rao and floors at every step
+(`checked_mul_value` = `floor(value × ratio / 1e18)`, `checked_div_value` =
+`floor(value / ratio)`). **The vault has no interest**: debt = borrowed, repay 1:1
 (`repay_token` rejects `amount > debt` with `RepayAmountTooHigh`).
 
 ## 1. Pricing: how much is my alpha worth?
 
 Two price sources are multiplied (`current_collateral_price`, lib.rs:1676):
 
-$$\text{TUSDT per } \alpha = \text{oracle}_{TUSDT/TAO} \times \frac{\text{alpha\_price\_rao}}{10^9}$$
+```text
+price per alpha (TUSDT) = oracle (TUSDT/TAO) × alpha price (TAO/alpha)
+collateral value (TUSDT) = price per alpha × alpha amount
+```
 
-$$\text{collateral\_value} = \left\lfloor \frac{\text{price} \times \text{collateral\_rao}}{10^{18}} \right\rfloor \quad \text{[TUSDT rao]}$$
-
-**Worked example (used throughout this guide).** Alice has 100 α on netuid 1,
-α-price = 377,277 rao, oracle = 200 TUSDT/TAO.
+**Worked example (used throughout this guide).** Alice deposits 1,000 alpha on netuid 1.
+The oracle reports 230 TUSDT/TAO and the chain alpha price is 0.003 TAO/alpha.
 
 ```text
-Step 1 — alpha price as a Ratio (alpha_price_rao_to_ratio, lib.rs:1753):
-  alpha_to_tao = Ratio::from_integer(377_277).checked_div_int(1e9)
-               = (377_277 × 1e18) // 1e9 = 377_277_000_000_000      (= 0.000377277)
+Step 1 — price per alpha:
+  230 × 0.003 = 0.69 TUSDT per alpha
 
-Step 2 — combine with the oracle (1e18 × 1e18, truncating mul):
-  price = (200 × 1e18) × 377_277_000_000_000 // 1e18
-        = 75_455_400_000_000_000                                      (= 0.0754554 TUSDT/α)
-
-Step 3 — collateral value (risk.rs:5, checked_mul_value floors):
-  collateral_value = 100_000_000_000 × 75_455_400_000_000_000 // 1e18
-                   = 7_545_540_000 rao = 7.54554 TUSDT
+Step 2 — collateral value:
+  0.69 × 1000 = 690 TUSDT
 ```
+
+> **Exact on-chain math**: in rao this is 690 TUSDT = 690,000,000,000 rao, computed as
+> `floor(0.69 × 1e18) × 1,000,000,000,000 / 1e18` — the same 690 TUSDT, just floored
+> through the fixed-point pipeline.
 
 ## 2. How much can I borrow?
 
-`max_borrow_allowed` (risk.rs:14) — the collateral ratio is the divisor
+`max_borrow_allowed` (risk.rs:14) divides the collateral value by the collateral ratio
 (`checked_div_value` = `value / self`):
 
-$$\text{max\_borrow} = \left\lfloor \frac{\text{collateral\_value}}{\text{collateral\_ratio}} \right\rfloor$$
-
-Borrowing is capped on **every** `borrow_token` call: if
-`borrowed + amount > max_borrow` the call reverts with `CollateralRatioExceeded`.
-Releasing collateral applies the same cap against the projected post-release balance.
-
 ```text
-max_borrow = 7_545_540_000 × 1e18 // (15_000 bps × 1e14 = 1_500_000_000_000_000_000)
-           = 5_030_360_000 rao = 5.03036 TUSDT
+max borrow (TUSDT) = collateral value ÷ collateral ratio
 ```
 
-Alice borrows 60% of her maximum: `3_018_216_000 rao = 3.018216 TUSDT`.
+With the default collateral ratio of 150% (1.5):
 
-**Where the floor bites** (test-pinned, `tests.rs:457`): with price 1.0 and 1,000 rao of
-collateral, `max_borrow = 1000 / 1.5 = 666.67 → 666` — the `666` is stored, the
-`0.67` rao is discarded. Same for `100 / 3 = 33.33 → 33`.
+```text
+max borrow = 690 ÷ 1.5 = 460 TUSDT
+```
+
+Borrowing is capped on **every** `borrow_token` call: if `borrowed + amount > max_borrow`
+the call reverts with `CollateralRatioExceeded`. Releasing collateral applies the same
+cap against the projected post-release balance.
+
+Alice borrows 300 TUSDT (about two-thirds of her cap):
+
+```text
+LTV      = 300 ÷ 690 ≈ 43.5%
+headroom = 460 − 300 = 160 TUSDT
+```
 
 **Reading your vault** (all derived, not stored — compute client-side):
 
 | Quantity | Formula | Alice's values |
 |---|---|---|
-| Collateral value | price × collateral | 7.54554 TUSDT |
-| Debt | borrowed | 3.018216 TUSDT |
-| LTV | debt / collateral value | 40.0% |
-| Borrow headroom | max_borrow − debt | 2,012,144,000 rao = 2.012144 TUSDT |
-| Liquidation limit | see below | 6.28795 TUSDT |
+| Collateral value | oracle × alpha price × amount | 230 × 0.003 × 1000 = 690 TUSDT |
+| Debt | borrowed | 300 TUSDT |
+| LTV | debt ÷ collateral value | 43.5% |
+| Borrow headroom | max borrow − debt | 160 TUSDT |
+| Liquidation limit | see below | 575 TUSDT |
+
+> **Exact on-chain math**: 690 ÷ 1.5 = 460 is exact even in rao. A floored case
+> (test-pinned, `tests.rs:457`): with price 1.0 and 1,000 rao of collateral,
+> `max_borrow = 1000 / 1.5 = 666.67 → 666` — the 0.67 rao is discarded. Same for
+> `100 / 3 = 33.33 → 33`.
 
 ## 3. When does liquidation happen?
 
 `liquidation_limit` (risk.rs:30) and `is_liquidatable` (risk.rs:46):
 
-$$\text{liquidatable} \iff \text{borrowed} > \left\lfloor \frac{\text{collateral\_value}}{\text{liquidation\_ratio}} \right\rfloor$$
-
-The comparison is **strict** (`>`): sitting *exactly at* the limit is safe. The check
-re-reads the oracle on every call — a stale price older than `max_oracle_age_ms`
-(30 min default) makes the trigger revert with `OraclePriceStale`.
-
 ```text
-liquidation_limit = 7_545_540_000 × 1e18 // (12_000 bps × 1e14 = 1_200_000_000_000_000_000)
-                  = 6_287_950_000 rao = 6.28795 TUSDT
-
-Alice's debt 3_018_216_000 < 6_287_950_000  →  safe, plenty of room.
+liquidatable iff borrowed > collateral value ÷ liquidation ratio
 ```
 
-**Solving for the liquidation price.** Alice's collateral value at oracle price $P$ is
-`value(P) = floor(P × 377_277 × 100_000_000_000 / 1e18 / 1e9) = P × 37_727.7`. She is
-liquidated when `3_018_216_000 > floor(value(P) / 1.2)`:
+The comparison is **strict** (`>`): sitting *exactly at* the limit is safe. With the
+default liquidation ratio of 120% (1.2):
 
 ```text
-P = 96:  value = 96 × 37_727.7 = 3_621_859_200 → limit = 3_018_216_000
-         borrowed 3_018_216_000 > 3_018_216_000?  NO  → safe (equal = NOT liquidatable)
-P = 95:  value = 95 × 37_727.7 = 3_584_131_500 → limit = 2_986_776_250
-         borrowed 3_018_216_000 > 2_986_776_250?  YES → LIQUIDATED
+liquidation limit = 690 ÷ 1.2 = 575 TUSDT
 ```
 
-Her liquidation price is oracle = **95** — a 52.5% drop from 200. At 96 she is safe, at
-95 she is liquidatable, and the boundary demonstrates the strict `>`: exactly at the
-limit (limit == debt) she is safe.
+With 300 TUSDT of debt Alice has plenty of room (300 < 575). She becomes liquidatable
+once her collateral value falls below `300 × 1.2 = 360` TUSDT:
 
-**The strict boundary, smallest scale** (test-pinned, `tests.rs:511`): a position worth
-1,000,000 rao with LR 120% has `limit = 833,333`. Debt `833,333` → safe; debt
-`833,334` → liquidatable. **One rao flips the vault.**
+```text
+collateral < 360
+  → alpha price < 360 ÷ 1000 = 0.36 TUSDT/alpha
+  → alpha price < 0.36 ÷ 230 ≈ 0.001565 TAO/alpha
+  → oracle < 120 TUSDT/TAO   (collateral = O × 0.003 × 1000 = 3O;
+                              liquidatable when 3O ÷ 1.2 < 300 → O < 120)
+```
+
+**The strict boundary, with numbers.** At exactly the boundary she is NOT liquidatable;
+one step below it she is:
+
+```text
+oracle 120: collateral = 120 × 0.003 × 1000 = 360 → limit = 360 ÷ 1.2 = 300
+            borrowed 300 > 300?  NO  → safe (equal = NOT liquidatable)
+oracle 119: collateral = 119 × 0.003 × 1000 = 357 → limit = 357 ÷ 1.2 = 297.5
+            borrowed 300 > 297.5?  YES → LIQUIDATED
+```
+
+**Full borrow (the worst case).** If Alice borrows the full 460 TUSDT:
+
+```text
+liquidatable when collateral < 460 × 1.2 = 552
+  → alpha price < 552 ÷ 1000 = 0.552 TUSDT/alpha
+  → alpha price < 0.552 ÷ 230 = 0.0024 TAO/alpha  (a 20% drop from 0.003)
+```
+
+The check re-reads the oracle on every call — a stale price older than
+`max_oracle_age_ms` (30 min default) makes the trigger revert with `OraclePriceStale`.
+
+> **Exact on-chain math**: the limit is floored, so the boundary can land one rao apart
+> (test-pinned, `tests.rs:511`): a position worth 1,000,000 rao with LR 120% has
+> `limit = 833,333`; debt 833,333 → safe, debt 833,334 → liquidatable. One rao flips
+> the vault.
 
 ## 4. The liquidation auction, step by step
 
-Anyone may call `trigger_liquidation_auction(owner, vault_id)` (permissionless;
-reverts `NotLiquidatable` if healthy, `VaultInLiquidation` if an auction is open).
-Assume the oracle has crashed to 90 so Alice's vault is underwater.
+Anyone may call `trigger_liquidation_auction(owner, vault_id)` (permissionless; reverts
+`NotLiquidatable` if healthy, `VaultInLiquidation` if an auction is already open).
+Suppose the oracle crashes to 90 TUSDT/TAO and the alpha price has fallen to
+0.0024 TAO/alpha — Alice's vault is now liquidatable.
 
-**Step 1 — trigger** (lib.rs:1306): the vault unstakes **all** 100 α via `remove_stake`
-(ext fn 2) and reads the native TAO actually received from the balance delta:
-
-```text
-tao_received = 100 α × 377_277 rao/α = 37_727_700 rao = 0.0377277 TAO
-```
-
-The auction sells this TAO for TUSDT. Debt at trigger `D = 3_018_216_000 rao` is frozen
-as `debt_balance`. `active_liquidation_count += 1` (this blocks `claim_excess_alpha`,
-`set_vault_hotkey`, `transfer_native_to_treasury` until settlement).
-
-**Step 2 — minimum bid** (`liquidation_min_bid`, risk.rs:53) — the liquidation fee is
-floored separately, then added:
-
-$$\text{min\_bid} = \text{debt} + \left\lfloor \text{debt} \times \text{liquidation\_fee} \right\rfloor$$
-
-```text
-min_bid = 3_018_216_000 + 3_018_216_000 × (1_100 bps × 1e14) // 1e18
-        = 3_018_216_000 + 331_998_760 = 3_350_219_760 rao = 3.35021976 TUSDT
-```
-
-**Step 3 — bidding** (auction contract, ascending bids in TUSDT; bidders must
-pre-approve the auction for `transfer_from`). Bob bids the minimum; Charlie re-bids 5%
-higher — re-bids must **strictly** increase (`BidAmountNotIncreased`) and pull only the
+**Step 1 — trigger** (lib.rs:1306): the vault unstakes **all** 1,000 alpha via
+`remove_stake` (ext fn 2) and reads the native TAO actually received from the balance
 delta:
 
 ```text
-Charlie's bid = 3_350_219_760 + floor(3_350_219_760 × 0.05) = 3_517_730_748 rao
+TAO received = 1000 × 0.0024 = 2.4 TAO
+```
+
+The auction sells this TAO for TUSDT. Debt at trigger `D = 300 TUSDT` is frozen as
+`debt_balance`, and `active_liquidation_count += 1` (this blocks `claim_excess_alpha`,
+`set_vault_hotkey`, and `transfer_native_to_treasury` until settlement).
+
+**Step 2 — minimum bid** (`liquidation_min_bid`, risk.rs:53) — debt plus the
+liquidation fee (11% default), fee floored separately then added:
+
+```text
+min bid = 300 + 300 × 11% = 300 + 33 = 333 TUSDT
+```
+
+**Step 3 — bidding** (ascending bids in TUSDT; bidders must pre-approve the auction for
+`transfer_from`). Bob bids the minimum 333; Charlie re-bids 350. Re-bids must
+**strictly** increase (`BidAmountNotIncreased`) and pull only the delta:
+
+```text
+Bob:     333 TUSDT
+Charlie: 350 TUSDT  → wins (highest bid at finalize)
 ```
 
 **Step 4 — finalize** (permissionless, after `ends_at` = trigger + 1 h; needs ≥ 1 bid).
@@ -165,10 +187,10 @@ frozen amount, *not* the full bid). The surplus stays in the vault as protocol s
 collateral (TAO) side:
 
 ```text
-tx fee        = floor(0.003 × 37_727_700) = 113_183 rao TAO        → treasury
-winner gets   = 37_727_700 − 113_183 = 37_614_517 rao TAO          → Charlie
-debt burned   = 3_018_216_000 rao TUSDT (exactly, no interest)
-surplus       = 3_517_730_748 − 3_018_216_000 = 499_514_748 rao    → vault → treasury
+tx fee        = 0.3% × 2.4 = 0.0072 TAO     → treasury
+winner gets   = 2.4 − 0.0072 = 2.3928 TAO    → Charlie
+debt burned   = 300 TUSDT (exactly, no interest)
+surplus       = 350 − 300 = 50 TUSDT         → vault → treasury
 ```
 
 Notes: borrow and repay are **free** — the 0.3% transaction fee exists only here, at
@@ -176,39 +198,45 @@ settlement, on the collateral side. If nobody bids before the auction expires, o
 configured **admin** may bid (backstop); losing bidders withdraw their TUSDT with
 `withdraw_refund`.
 
+> **Exact on-chain math**: 333 TUSDT = 333,000,000,000 rao
+> (`300,000,000,000 + floor(300,000,000,000 × 0.11)`), and the tx fee is
+> `floor(0.3% × 2,400,000,000) = 7,200,000 rao` — Charlie receives
+> 2,392,800,000 rao.
+
 ## 5. Parameter sensitivity: same position, different risk settings
 
-Base position: 100 α, α-price 377,277 rao, oracle 200 → collateral value
-7,545,540,000 rao (7.54554 TUSDT). Full debt = max borrow.
+Base position: 1,000 alpha, alpha price 0.003 TAO/alpha, oracle 230 TUSDT/TAO →
+collateral value 690 TUSDT. Full debt = max borrow. The liquidation alpha price P
+solves `1000 × P × 230 ÷ LR < max_borrow`, i.e. `P = max_borrow × LR ÷ 230,000`:
 
-| Set | CR | LR | Liq fee | Max borrow | Liquidation limit | Buffer (limit − max) | Liq. oracle | Min bid (full debt) |
+| Set | CR | LR | Liq fee | Max borrow | Liquidation limit | Buffer | Liq alpha price (TAO/alpha) | Min bid at full debt |
 |---|---|---|---|---|---|---|---|---|
-| (a) defaults | 150% | 120% | 11% | 5.03036 | 6.28795 | 1.25759 | ≤ 159 | 5.5836996 |
-| (b) | 175% | 140% | 15% | 4.311737142 | 5.389671428 | 1.077934286 | ≤ 159 | 4.958497713 |
-| (c) | 200% | 150% | 25% | 3.77277 | 5.03036 | 1.25759 | ≤ 149 | 4.7159625 |
-| (d) | 300% | 200% | 11% | 2.51518 | 3.77277 | 1.25759 | ≤ 133 | 2.7918498 |
+| (a) defaults | 150% | 120% | 11% | 460.00 | 575.00 | 115.00 | 0.0024 | 510.60 |
+| (b) | 175% | 140% | 15% | 394.29 | 492.86 | 98.57 | 0.0024 | 453.43 |
+| (c) | 200% | 150% | 25% | 345.00 | 460.00 | 115.00 | 0.00225 | 431.25 |
+| (d) | 300% | 200% | 11% | 230.00 | 345.00 | 115.00 | 0.002 | 255.30 |
 
-(TUSDT amounts; exact rao values: max borrow 5,030,360,000 / 4,311,737,142 /
-3,772,770,000 / 2,515,180,000.) The "liq. oracle" column is the highest oracle price
-at which a position borrowed to the **full max** is liquidatable: for set (a),
-`limit(159) = 4,998,920,250 < 5,030,360,000` → liquidated; `limit(160) = 5,030,360,000`
-→ safe. Raising CR pushes the max borrow down and the liquidation trigger down with it.
+(TUSDT amounts; exact values: max borrow 460 / 394.2857 / 345 / 230, limit
+575 / 492.8571 / 460 / 345, buffer = limit − max = 115 / 98.5714 / 115 / 115.)
+Set (a) matches the full-borrow case in section 3: `P = 460 × 1.2 ÷ 230,000 = 0.0024`.
+Raising the collateral ratio pushes the max borrow down — and the liquidation trigger
+down with it: set (d) liquidates only after a 33% drop from 0.003 to 0.002 TAO/alpha.
 
-**Min-bid sensitivity** (fixed debt 1,000,000,000 rao):
+**Min-bid sensitivity** (fixed debt 1 TUSDT, fee floored separately):
 
 | Liq fee | Fee amount | Min bid |
 |---|---|---|
-| 0% | 0 | 1,000,000,000 |
-| 5% | 50,000,000 | 1,050,000,000 |
-| 11% (default) | 110,000,000 | 1,110,000,000 |
-| 25% | 250,000,000 | 1,250,000,000 |
-| 100% (max) | 1,000,000,000 | 2,000,000,000 |
+| 0% | 0 | 1.00 |
+| 5% | 0.05 | 1.05 |
+| 11% (default) | 0.11 | 1.11 |
+| 25% | 0.25 | 1.25 |
+| 100% (max) | 1.00 | 2.00 |
 
 ## 6. Fees and boundaries at a glance
 
-- **Creation fee** — 5,000,000 rao (0.005 TAO) payable with `create_alpha_vault`; excess
-  is refunded. Send 10,000,000 → 5,000,000 kept + 5,000,000 refunded. Send 4,999,999 →
-  `VaultCreationFeeNotMet`, no vault created, nothing taken.
+- **Creation fee** — 5,000,000 rao (0.005 TAO) payable with `create_alpha_vault`;
+  excess is refunded. Send 10,000,000 → 5,000,000 kept + 5,000,000 refunded. Send
+  4,999,999 → `VaultCreationFeeNotMet`, no vault created, nothing taken.
 - **Param validation** (governance cannot set these, all → `InvalidRatio` /
   `InvalidAuctionDuration` / `InvalidOracleMaxAge`): CR == LR (150/150), CR < LR
   (110/120), LR 99%, liq fee 101%, tx fee 101%, auction < 60 s (30,000 ms), auction
@@ -224,10 +252,10 @@ at which a position borrowed to the **full max** is liquidatable: for set (a),
 
 | Formula | Value |
 |---|---|
-| price_per_alpha | `oracle × α_price_rao / 1e9` |
-| collateral_value | `floor(price × collateral_rao / 1e18)` |
-| max_borrow | `floor(collateral_value / CR)` — CR 150% |
-| liquidatable iff | `borrowed > floor(collateral_value / LR)` — LR 120%, strict `>` |
-| min_bid | `debt + floor(debt × 11%)` |
-| settle tx fee | `floor(0.3% × collateral_TAO)` at settlement, TAO side |
+| price per alpha | `oracle × alpha price` — 230 × 0.003 = 0.69 TUSDT/alpha |
+| collateral value | `price × amount` — 0.69 × 1000 = 690 TUSDT |
+| max borrow | `collateral ÷ CR` — 690 ÷ 1.5 = 460 TUSDT (CR 150%) |
+| liquidatable iff | `borrowed > collateral ÷ LR` — limit 690 ÷ 1.2 = 575, strict `>` (LR 120%) |
+| min bid | `debt + debt × 11%` — 300 + 33 = 333 TUSDT |
+| settle tx fee | `0.3% × collateral TAO`, at settlement, TAO side — 0.3% × 2.4 = 0.0072 TAO |
 | interest | **none** — repay 1:1 |

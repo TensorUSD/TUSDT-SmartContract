@@ -28,13 +28,17 @@ Submission (`submit_proposal`) is **council-gated** and additionally restricted 
 
 The electorate is an **off-chain Merkle snapshot** committed on-chain by the council (`submit_snapshot`). Each leaf is
 
-$$leaf = blake2\_256(SCALE(coldkey,\ hotkey,\ balance,\ multiplier\_bps))$$
+```text
+leaf = blake2_256(SCALE(coldkey, hotkey, balance, multiplier_bps))
+```
 
 (`leaf_hash` in `tusdt-voting`). `balance` is the alpha balance frozen at the snapshot block, so buying stake after the snapshot changes nothing. A vote proves its leaf against the snapshot root with a Merkle proof (`verify_merkle_proof`), and each `(coldkey, hotkey)` pair votes once per proposal (`AlreadyVoted` otherwise).
 
 Voting power is quadratic in balance and scaled by a time-staked multiplier (`voting_power` in `tusdt-voting`):
 
-$$\text{weight} = \left\lfloor \sqrt{balance} \cdot \frac{multiplier\_bps}{10\,000} \right\rfloor$$
+```text
+weight = floor(sqrt(balance) × multiplier_bps / 10_000)
+```
 
 The square root dampens whales (10,000× the stake is only 100× the power); `multiplier_bps` rewards longer-held stake per leaf (e.g. 1.0× = 10 000, 0.5× = 5 000). The integer square root is Newton's method (`integer_sqrt`) — no floats on-chain.
 
@@ -43,7 +47,7 @@ The square root dampens whales (10,000× the stake is only 100× the power); `mu
 `finalize` applies two gates (both must hold, plus `total > 0`):
 
 - **Quorum** is measured in **raw snapshot balance**, not voting power: the sum of the `balance` of every leaf that voted must reach `quorum(epoch) = ⌊circulating_supply × quorum_bps / 10 000⌋` — by default 20% of the snapshot's alpha circulating supply.
-- **Approval** is measured in **voting power**: $\lfloor yes \times 10\,000 / (yes + no) \rfloor \ge approval\_bps$ — by default 5 001 bps (50.01%).
+- **Approval** is measured in **voting power**: `floor(yes × 10_000 / (yes + no)) ≥ approval_bps` — by default 5 001 bps (50.01%).
 
 Both `finalize` and `execute` are **permissionless** — anyone may close voting once `voting_ends_at` has passed and push a passed proposal through, so the lifecycle can never stall.
 
@@ -109,7 +113,7 @@ Any single council member calls `vault_pause()` to halt the vault immediately; r
 | `COUNCIL_SIZE` | Council membership (`set_council`) | 5 | — |
 | `MAX_CID_LEN` | Max proposal CID length | 96 | bytes |
 | `DEFAULT_NETUID` | Governing subnet at construction | 113 | netuid |
-| Multiplier / balance | Voting power leaf inputs | $\lfloor\sqrt{balance}\cdot mult/10\,000\rfloor$ | balance in rao |
+| Multiplier / balance | Voting power leaf inputs | floor(sqrt(balance) × mult / 10 000) | balance in rao |
 
 ## Talks to
 

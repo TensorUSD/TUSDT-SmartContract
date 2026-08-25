@@ -23,12 +23,19 @@ Each fund is tracked separately for TUSDT and native (`funds_tusdt` / `funds_nat
 
 The treasury runs **delta accounting**: the contract's *actual* on-chain balance is reconciled against the *booked* total. `distribute()` is permissionless and idempotent — anyone can call it, and it only books newly arrived value:
 
-$$\text{pending\_tusdt} = token.balance\_of(treasury) - tusdt\_allocated$$
-$$\text{pending\_native} = balance(treasury) - native\_allocated$$
+```text
+pending_tusdt = token.balance_of(treasury) - tusdt_allocated
+```
+
+```text
+pending_native = balance(treasury) - native_allocated
+```
 
 Each positive delta is split by `split_delta`:
 
-$$share_f = \left\lfloor delta \times \frac{bps_f}{10\,000} \right\rfloor, \qquad Emergency = delta - \sum_{f \ne Emergency} share_f$$
+```text
+share_f = floor(delta × bps_f / 10_000),  Emergency = delta − sum of the other shares
+```
 
 Because the other five shares are rounded down, crediting the remainder to `Emergency` guarantees the six shares sum exactly to `delta` — the books always reconcile.
 
