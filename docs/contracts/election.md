@@ -6,7 +6,7 @@
 
 ### The cycle
 
-Lifecycle: `Idle → Registration → Voting → Elected → Idle`. A term is `TERM_LENGTH_MS` = 730 days (2 years); the next election may open at $next\_election\_ts = genesis\_election\_ts + term\_index \times 730d$ (`advance_cadence`), recomputed from the genesis anchor so no millisecond drift accumulates. The initial maintainer counts as term 1 — the first election falls one full term after deployment.
+Lifecycle: `Idle → Registration → Voting → Elected → Idle`. A term is `TERM_LENGTH_MS` = 730 days (2 years); the next election may open at `next_election_ts = genesis_election_ts + term_index × 730d` (`advance_cadence`), recomputed from the genesis anchor so no millisecond drift accumulates. The initial maintainer counts as term 1 — the first election falls one full term after deployment.
 
 ### Snapshot from governance
 
@@ -17,13 +17,15 @@ Lifecycle: `Idle → Registration → Voting → Elected → Idle`. A term is `T
 `register_candidate(netuid, hotkey)` is permissionless during `Registration`, gated on-chain:
 
 - `netuid` must be non-zero (`InvalidNetuid`); the account must have served fewer than `MAX_TERMS` (2) terms (`TermLimitReached`).
-- The coldkey must hold at least `MIN_CANDIDATE_STAKE` = $10^{13}$ rao (10 000 TAO) of alpha in `netuid`, proven live via the chain extension (`read_candidate_stake`) — the subnet-owner bar. No approval step: a registered candidate is immediately votable.
+- The coldkey must hold at least `MIN_CANDIDATE_STAKE` = `10^13` rao (10 000 TAO) of alpha in `netuid`, proven live via the chain extension (`read_candidate_stake`) — the subnet-owner bar. No approval step: a registered candidate is immediately votable.
 
 ### Voting: one leaf, one approval
 
 `cast_approval(candidate, hotkey, balance, multiplier_bps, proof)` is the single-vote rule: each `(coldkey, hotkey)` leaf may approve **exactly one candidate** (`AlreadyApproved`). The first vote of a cycle — only on UTC days 5–9 — opens voting and pins `voting_ends_at` to the 10th at 00:00 UTC, so the window is fixed to the calendar regardless of when voting actually starts. Each vote proves its leaf against the cycle's snapshot root (`verify_merkle_proof`), contributes weight
 
-$$\text{weight} = \left\lfloor \sqrt{balance} \times \frac{multiplier\_bps}{10\,000} \right\rfloor$$
+```text
+weight = floor(sqrt(balance) × multiplier_bps / 10_000)
+```
 
 to the candidate's approval total, and the contract keeps a **running leader** (`leading_candidate`) so `finalize` never scans candidates.
 
@@ -31,8 +33,8 @@ to the candidate's approval total, and the contract keeps a **running leader** (
 
 `finalize` (permissionless, after `voting_ends_at`) declares a winner only if **both** hold:
 
-- **Turnout quorum** — raw voted balance: $total\_voted\_balance \ge \lfloor circulating\_supply \times 2\,000 / 10\,000 \rfloor$ (20%).
-- **Strict majority** — $best \times 10\,000 > total\_voting\_power \times 5\,000$: the leader's approval weight must exceed 50% of the participating voting power. Since every leaf votes once, at most one candidate can clear this bar.
+- **Turnout quorum** — raw voted balance: `total_voted_balance ≥ floor(circulating_supply × 2_000 / 10_000)` (20%).
+- **Strict majority** — `best × 10_000 > total_voting_power × 5_000`: the leader's approval weight must exceed 50% of the participating voting power. Since every leaf votes once, at most one candidate can clear this bar.
 
 No winner → the incumbent stays and the cadence advances (`ElectionFinalized` with `winner: None`).
 
@@ -65,7 +67,7 @@ The incumbent may `trigger_emergency_election` (lets the next `schedule_election
 | `QUORUM_BPS` | Turnout quorum of circulating supply | 2 000 (20%) | bps, /10 000 |
 | `MIN_CANDIDATE_STAKE` | Candidate subnet-owner bar | 10 000 000 000 000 rao (10 000 TAO) | rao |
 | `TRANSITION_MS` | Cross-subnet migration | 182 days | ms |
-| Weight formula | Per-leaf voting power | $\lfloor\sqrt{balance}\cdot mult/10\,000\rfloor$ | rao |
+| Weight formula | Per-leaf voting power | floor(sqrt(balance) × mult / 10 000) | rao |
 
 ## Talks to
 
