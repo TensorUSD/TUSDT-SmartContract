@@ -256,7 +256,9 @@ The lending pool (`tusdt-lending-pool`) is a standalone protocol contract that e
 - **Supply TAO/TUSDT** to earn variable yield (receive lTAO/lTUSDT receipt tokens)
 - **Supply Alpha collateral** (one market per approved subnet) to gain borrowing power
 - **Borrow TAO/TUSDT** against Alpha collateral with health factor checks
-- **Direct liquidation** when health factor drops below 1.0 (close factor 50%, configurable bonus)
+- **Direct liquidation** when health factor drops below 1.0 (close factor 50%, configurable bonus,
+  full-close escape hatch below HF 0.95, seizure clamped to available collateral, residual bad
+  debt written off as a market deficit)
 
 Source layout: the contract module is split into `lib.rs` (storage, events, messages, queries) plus
 `params.rs` (interest/alpha/global param structs + validation), `rates.rs` (interest accrual,
@@ -299,21 +301,29 @@ liquidation math).
    vault). One market per approved subnet.
 3. **Borrow**: Users with alpha collateral can borrow TAO or TUSDT. Borrowing power is:
    `collateral_value × collateral_factor − existing_debt`. Health factor must stay ≥ 1.0.
+   **One hour of interest is charged up front** — the position's debt exceeds the amount from
+   the very first block (hour-beginning charging), and the next increase arrives with the
+   market's next hourly accrual. Repaying inside that hour does not refund it.
 4. **Repay**: Repay TAO (payable) or TUSDT (`transfer_from`). Repaid assets stay as pool liquidity —
-   no burn. Interest accrues continuously while borrowed.
+   no burn. Interest accrues hourly while borrowed.
 5. **Withdraw collateral**: Only allowed when the account remains healthy after withdrawal. Uses
    chain extension func 6 (`transfer_stake`) to return stake to the user's coldkey.
 6. **Liquidate**: Permissionless. When `health_factor < 1.0`, any account can repay a portion of the
-   borrower's debt (up to 50% close factor) and receive discounted alpha collateral (configurable
-   bonus, default 5%).
+   borrower's debt (up to 50% close factor; up to **100%** when the health factor is below
+   `full_close_hf_threshold`, default 0.95) and receive discounted alpha collateral (configurable
+   bonus, default 5%). The seizure clamps to the collateral that actually exists; if a liquidation
+   consumes all of it with debt remaining, the residual is written off as a frozen market deficit
+   (`DeficitReported`) that the maintainer can fund from the reserve via `cover_deficit`.
 
 ### Interest rate model
 
 - **Utilization-based** 2-zone curve: `U = total_debt / (total_debt + cash)`.
   - Zone 1 (U ≤ optimal): `base_rate + slope1 × U / optimal`
   - Zone 2 (U > optimal): `base_rate + slope1 + slope2 × (U − optimal) / (1 − optimal)`
-- **Discrete hourly compounding** via `checked_pow` — same primitives as the vault's former interest
-  model.
+- **Hourly compounding** via `checked_pow` with the **first hour prepaid at borrow time**
+  (`charge_prepaid_hour`) — interest starts accruing from the moment of the borrow instead of
+  after the first whole hour; the prepaid premium is split reserve/suppliers exactly like
+  index-driven interest.
 - **Reserve factor** (default 20%): share of borrower interest sent to the protocol treasury.
   `supplier_rate = borrow_rate × U × (1 − reserve_factor)`.
 - **lToken exchange rate**: `underlying = ltoken_balance × exchange_rate`. Exchange rate starts at
@@ -344,6 +354,7 @@ Alpha collateral continues earning native staking yield while supplied. A permis
 | Global param        | Default |
 |---------------------|---------|
 | Close factor        | 50%     |
+| Full-close HF threshold | 95%  |
 | Performance fee     | 25%     |
 | Max oracle age      | 30 min  |
 

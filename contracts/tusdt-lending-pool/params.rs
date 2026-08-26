@@ -58,6 +58,10 @@ use super::*;
         pub max_oracle_age_ms: u64,
         pub close_factor: Ratio,
         pub performance_fee: Ratio,
+        /// Health-factor threshold below which a liquidation may cover up to
+        /// 100% of the borrower's debt (Aave V3.1-style full-close escape
+        /// hatch). Above it the `close_factor` cap applies. Default 95% (0.95).
+        pub full_close_hf_threshold: Ratio,
         pub supply_cap_tao: Balance,
         pub supply_cap_tusdt: Balance,
         pub borrow_cap_tao: Balance,
@@ -72,6 +76,8 @@ use super::*;
         pub max_oracle_age_ms: u64,
         pub close_factor: u32,
         pub performance_fee: u32,
+        /// Full-close health threshold in basis points (9500 = 0.95).
+        pub full_close_hf_threshold: u32,
         pub supply_cap_tao: Balance,
         pub supply_cap_tusdt: Balance,
         pub borrow_cap_tao: Balance,
@@ -142,6 +148,7 @@ use super::*;
                 max_oracle_age_ms: self.max_oracle_age_ms,
                 close_factor: self.close_factor.to_basis_points().unwrap_or(0),
                 performance_fee: self.performance_fee.to_basis_points().unwrap_or(0),
+                full_close_hf_threshold: self.full_close_hf_threshold.to_basis_points().unwrap_or(0),
                 supply_cap_tao: self.supply_cap_tao,
                 supply_cap_tusdt: self.supply_cap_tusdt,
                 borrow_cap_tao: self.borrow_cap_tao,
@@ -191,6 +198,7 @@ use super::*;
             max_oracle_age_ms: 1_800_000,                    // 30 min
             close_factor: Ratio::from_basis_points(5000),    // 50%
             performance_fee: Ratio::from_basis_points(2500), // 25%
+            full_close_hf_threshold: Ratio::from_basis_points(9500), // 95%
             supply_cap_tao: 0,
             supply_cap_tusdt: 0,
             borrow_cap_tao: 0,
@@ -300,8 +308,9 @@ impl TusdtLendingPool {
         }
 
         /// Validates a global params config (oracle age > 0, close factor in
-        /// (0, 5_000], performance fee <= 5_000) and converts it to internal
-        /// Ratio-based params. Errors: `Error::InvalidParam`.
+        /// (0, 5_000], performance fee <= 5_000, full-close health threshold in
+        /// (0, 10_000]) and converts it to internal Ratio-based params. Errors:
+        /// `Error::InvalidParam`.
         pub(crate) fn global_params_from_config(
             config: PoolGlobalParamsConfig,
         ) -> Result<PoolGlobalParams> {
@@ -314,10 +323,14 @@ impl TusdtLendingPool {
             if config.performance_fee > 5_000 {
                 return Err(Error::InvalidParam);
             }
+            if config.full_close_hf_threshold == 0 || config.full_close_hf_threshold > 10_000 {
+                return Err(Error::InvalidParam);
+            }
             Ok(PoolGlobalParams {
                 max_oracle_age_ms: config.max_oracle_age_ms,
                 close_factor: Ratio::from_basis_points(config.close_factor),
                 performance_fee: Ratio::from_basis_points(config.performance_fee),
+                full_close_hf_threshold: Ratio::from_basis_points(config.full_close_hf_threshold),
                 supply_cap_tao: config.supply_cap_tao,
                 supply_cap_tusdt: config.supply_cap_tusdt,
                 borrow_cap_tao: config.borrow_cap_tao,
@@ -337,6 +350,12 @@ impl TusdtLendingPool {
                 return Err(Error::InvalidRatio);
             }
             if params.performance_fee.into_inner() > Ratio::from_basis_points(5_000).into_inner() {
+                return Err(Error::InvalidRatio);
+            }
+            if params.full_close_hf_threshold.is_zero()
+                || params.full_close_hf_threshold.into_inner()
+                    > Ratio::from_basis_points(10_000).into_inner()
+            {
                 return Err(Error::InvalidRatio);
             }
             Ok(())
