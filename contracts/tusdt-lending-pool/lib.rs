@@ -113,6 +113,33 @@ mod lending_pool {
         index.checked_mul_value(scaled.into()).and_then(|v| Balance::try_from(v).ok())
     }
 
+    /// Computes a health factor as a 1e18 `Ratio`:
+    /// `(liquidation_threshold × collateral_value) / debt_value`.
+    ///
+    /// Extracted as a pure helper so the scale-critical arithmetic is unit
+    /// testable: the full `get_health_factor` reads the oracle through a
+    /// cross-contract call, which the off-chain test environment cannot serve.
+    ///
+    /// **Scale trap this exists to prevent**: `checked_mul_value` returns a
+    /// plain rao-scale integer, NOT a `Ratio` inner. Passing that integer to
+    /// `Ratio::from_inner` reinterprets it at the 1e18 scale (dividing its
+    /// meaning by 1e18); the subsequent `checked_div_int` — which computes
+    /// `self.0 / rhs` — then collapses the whole expression to a near-zero
+    /// integer, so every position carrying debt reports a health factor of
+    /// ~0 and looks liquidatable. `Ratio::from_integer` re-scales correctly.
+    ///
+    /// Returns `None` on overflow or when `debt_value` is zero (callers treat a
+    /// zero debt as "no health factor" before reaching here).
+    pub(crate) fn health_factor_from_values(
+        threshold: Ratio,
+        collateral_value: Balance,
+        debt_value: Balance,
+    ) -> Option<Ratio> {
+        threshold
+            .checked_mul_value(collateral_value.into())
+            .and_then(|weighted| Ratio::from_integer(weighted).checked_div_int(debt_value.into()))
+    }
+
     /// Per-market runtime accrual state. Markets 0 (TAO) and 1 (TUSDT) are supply+borrow
     /// markets with interest accrual. Markets 2+ are alpha collateral-only markets (one per
     /// approved subnet); their MarketState exists but accrual is a no-op.
@@ -259,6 +286,13 @@ mod lending_pool {
         /// mapping (not inside `Position`) so the stored `Position` layout
         /// stays unchanged and any existing positions remain decodable.
         debt_principal: Mapping<(u8, AccountId), Balance>,
+        /// Unfunded bad-debt per market, in face units of the market's asset,
+        /// FROZEN at write-off (never multiplied by the borrow index again, so
+        /// it cannot compound or poison utilization). Written when a
+        /// liquidation consumes a borrower's entire collateral position with
+        /// debt remaining; reduced by `cover_deficit`, which funds it from
+        /// `reserve_accrued`.
+        market_deficit: Mapping<u8, Balance>,
 
         // ── Idle TAO root-subnet staking ──
         /// Hotkey the pool stakes idle TAO to on the root subnet (netuid 0).
@@ -412,6 +446,34 @@ mod lending_pool {
         #[ink(topic)]
         pub market: u8,
         /// Reserve amount claimed (9-decimal units).
+        pub amount: Balance,
+    }
+
+    /// Emitted when a liquidation consumes a borrower's entire collateral
+    /// position on a netuid while debt remains on the debt market. The
+    /// residual debt is removed from the ledger (so utilization and rates are
+    /// not poisoned by uncollectible debt) and frozen as an unfunded market
+    /// deficit that does not compound.
+    #[ink(event)]
+    pub struct DeficitReported {
+        /// Market id (0 = TAO, 1 = TUSDT).
+        #[ink(topic)]
+        pub market: u8,
+        /// Borrower whose position was written off.
+        #[ink(topic)]
+        pub user: AccountId,
+        /// Face amount written off (9-decimal units), frozen at this value.
+        pub amount: Balance,
+    }
+
+    /// Emitted when the maintainer covers part of a market's deficit from
+    /// `reserve_accrued` (the treasury's reserve claim absorbs the loss).
+    #[ink(event)]
+    pub struct DeficitCovered {
+        /// Market id (0 = TAO, 1 = TUSDT).
+        #[ink(topic)]
+        pub market: u8,
+        /// Deficit amount covered (9-decimal units).
         pub amount: Balance,
     }
 
@@ -790,6 +852,7 @@ mod lending_pool {
                 positions: Mapping::default(),
                 position_keys: StorageVec::new(),
                 debt_principal: Mapping::default(),
+                market_deficit: Mapping::default(),
                 root_hotkey: pool_hotkey,
                 staked_tao: 0,
                 stake_buffer: DEFAULT_STAKE_BUFFER,
@@ -856,6 +919,7 @@ mod lending_pool {
                 positions: Mapping::default(),
                 position_keys: StorageVec::new(),
                 debt_principal: Mapping::default(),
+                market_deficit: Mapping::default(),
                 root_hotkey: pool_hotkey,
                 staked_tao: 0,
                 stake_buffer: DEFAULT_STAKE_BUFFER,
@@ -1384,6 +1448,11 @@ mod lending_pool {
         // ─────────────────────────────────────────────────────────────
 
         /// Borrows TAO against the caller's alpha collateral.
+        ///
+        /// One hour of interest is charged up front: the position's debt
+        /// exceeds `amount` from this block onward, and the next increase
+        /// arrives with the market's next hourly accrual. Repaying sooner than
+        /// an hour does not refund that first hour.
         #[ink(message)]
         pub fn borrow_tao(&mut self, amount: Balance) -> Result<()> {
             self.ensure_not_paused()?;
@@ -1444,8 +1513,16 @@ mod lending_pool {
             }
 
             // Effects
-            let state = self.markets.get(0).ok_or(Error::MarketNotFound)?;
-            // scaled = ceil(amount / borrow_index). Rounding UP (Aave rayDivUp)
+            let mut state = self.markets.get(0).ok_or(Error::MarketNotFound)?;
+            // Charge the first hour of interest up front (hour-beginning
+            // charging): the premium is booked into the position's debt now, so
+            // the borrower owes interest from this instant and their next
+            // increase arrives with the market's next hourly accrual.
+            let premium = self.charge_prepaid_hour(0, &mut state, amount).inspect_err(|_| {
+                self.set_idle();
+            })?;
+            let debt_booked = amount.checked_add(premium).ok_or(Error::ArithmeticError)?;
+            // scaled = ceil(debt_booked / borrow_index). Rounding UP (Aave rayDivUp)
             // keeps the borrower's debt >= the amount they receive, so the
             // market total can never drift above the sum of user positions
             // (no ghost debt) and a later full repayment clears the position
@@ -1453,11 +1530,10 @@ mod lending_pool {
             // rounded up, so the Ratio must be the borrow_index (divisor).
             let scaled = state
                 .borrow_index
-                .checked_div_value_ceil(amount.into())
+                .checked_div_value_ceil(debt_booked.into())
                 .and_then(|v| Balance::try_from(v).ok())
                 .ok_or(Error::ArithmeticError)?;
 
-            let mut state = state;
             // Lockstep scaled accounting: the market total gains the SAME
             // scaled units as the position (Aave: total and user shares move
             // together), so the ledger can never drift. The face total is
@@ -1490,6 +1566,11 @@ mod lending_pool {
         }
 
         /// Borrows TUSDT against the caller's alpha collateral.
+        ///
+        /// One hour of interest is charged up front: the position's debt
+        /// exceeds `amount` from this block onward, and the next increase
+        /// arrives with the market's next hourly accrual. Repaying sooner than
+        /// an hour does not refund that first hour.
         #[ink(message)]
         pub fn borrow_tusdt(&mut self, amount: Balance) -> Result<()> {
             self.ensure_not_paused()?;
@@ -1530,8 +1611,13 @@ mod lending_pool {
             }
 
             // Effects
-            let state = self.markets.get(1).ok_or(Error::MarketNotFound)?;
-            // scaled = ceil(amount / borrow_index). Rounding UP (Aave rayDivUp)
+            let mut state = self.markets.get(1).ok_or(Error::MarketNotFound)?;
+            // Charge the first hour of interest up front (see borrow_tao).
+            let premium = self.charge_prepaid_hour(1, &mut state, amount).inspect_err(|_| {
+                self.set_idle();
+            })?;
+            let debt_booked = amount.checked_add(premium).ok_or(Error::ArithmeticError)?;
+            // scaled = ceil(debt_booked / borrow_index). Rounding UP (Aave rayDivUp)
             // keeps the borrower's debt >= the amount they receive, so the
             // market total can never drift above the sum of user positions
             // (no ghost debt) and a later full repayment clears the position
@@ -1539,11 +1625,10 @@ mod lending_pool {
             // rounded up, so the Ratio must be the borrow_index (divisor).
             let scaled = state
                 .borrow_index
-                .checked_div_value_ceil(amount.into())
+                .checked_div_value_ceil(debt_booked.into())
                 .and_then(|v| Balance::try_from(v).ok())
                 .ok_or(Error::ArithmeticError)?;
 
-            let mut state = state;
             // Lockstep scaled accounting (see borrow_tao): the market total
             // gains the SAME scaled units as the position.
             state.total_scaled_debt =
@@ -2033,8 +2118,14 @@ mod lending_pool {
 
             let liquidator = self.env().caller();
 
-            // Verify borrower is liquidatable
-            if !self.is_liquidatable(borrower)? {
+            // Verify borrower is liquidatable, computing the health factor once
+            // so the full-close branch below does not re-read the oracle.
+            let health = self.get_health_factor(borrower)?;
+            let liquidatable = matches!(
+                health,
+                Some(hf) if hf.into_inner() < Ratio::one().into_inner()
+            );
+            if !liquidatable {
                 self.set_idle();
                 return Err(Error::NotLiquidatable);
             }
@@ -2047,11 +2138,22 @@ mod lending_pool {
                 self.set_idle();
             })?;
 
-            // Compute borrower's total debt value and apply close factor
+            // Compute borrower's total debt value and the cover cap. The cap is
+            // the close factor, EXCEPT for deeply-underwater positions (health
+            // factor below `full_close_hf_threshold`, default 95%): those may
+            // be covered up to 100% so a liquidator can close a doomed position
+            // completely instead of nibbling it forever. (Below
+            // HF < LT × (1 + bonus) every partial liquidation makes the health
+            // factor worse — the spiral that previously ended in
+            // CollateralAwardExceedsPosition with stranded residual debt.)
             let debt_value_tusdt = self.get_debt_value_tusdt(borrower)?;
-            let max_cover_tusdt = self
-                .global_params
-                .close_factor
+            let full_close = matches!(
+                health,
+                Some(hf)
+                    if hf.into_inner() < self.global_params.full_close_hf_threshold.into_inner()
+            );
+            let cover_cap = if full_close { Ratio::one() } else { self.global_params.close_factor };
+            let max_cover_tusdt = cover_cap
                 .checked_mul_value(debt_value_tusdt.into())
                 .and_then(|v| Balance::try_from(v).ok())
                 .ok_or(Error::ArithmeticError)?;
@@ -2126,10 +2228,67 @@ mod lending_pool {
                 .positions
                 .get((collateral_market_id, borrower))
                 .unwrap_or(Position { ltoken_balance: 0, scaled_debt: 0, alpha_principal: 0 });
-            if alpha_principal_to_seize > collateral_pos.alpha_principal {
-                self.set_idle();
-                return Err(Error::CollateralAwardExceedsPosition);
-            }
+
+            // Clamp the seizure to the borrower's available collateral and
+            // back-compute the debt it covers (Aave: when collateral is the
+            // binding constraint, the liquidator may only be asked to pay for
+            // what they actually receive). Previously this hard-reverted with
+            // CollateralAwardExceedsPosition, stranding residual debt AND
+            // collateral; now the liquidation finishes against the collateral
+            // that actually exists.
+            let alpha_params =
+                self.alpha_params.get(collateral_netuid).unwrap_or(default_alpha_params());
+            let yield_index =
+                self.netuid_yield_index.get(collateral_netuid).unwrap_or(Ratio::one());
+            let bonus_multiplier = Ratio::from_inner(
+                Ratio::one()
+                    .into_inner()
+                    .checked_add(alpha_params.liquidation_bonus.into_inner())
+                    .ok_or(Error::ArithmeticError)?,
+            );
+            let clamped = TusdtLendingPool::clamp_liquidation_seizure(
+                collateral_price,
+                bonus_multiplier,
+                yield_index,
+                collateral_pos.alpha_principal,
+                alpha_to_seize,
+                alpha_principal_to_seize,
+            )?;
+            let (alpha_to_seize, alpha_principal_to_seize, _cover_value_tusdt, actual_debt_units) =
+                match clamped {
+                    None => (
+                        alpha_to_seize,
+                        alpha_principal_to_seize,
+                        cover_value_tusdt,
+                        actual_debt_units,
+                    ),
+                    Some((a2s, p2s, new_cover)) => {
+                        // Re-derive the debt units the clamped cover supports,
+                        // rounded UP so the borrower's debt is retired by at
+                        // least the collateral's worth.
+                        let new_units = if debt_market == 0 {
+                            let cover_tao = tusdt_per_tao
+                                .checked_div_value_ceil(new_cover.into())
+                                .and_then(|v| Balance::try_from(v).ok())
+                                .ok_or(Error::ArithmeticError)?;
+                            min(cover_tao, borrower_debt)
+                        } else {
+                            min(new_cover, borrower_debt)
+                        };
+                        if new_units == 0 {
+                            self.set_idle();
+                            return Err(Error::ZeroAmount);
+                        }
+                        (a2s, p2s, new_cover, new_units)
+                    },
+                };
+
+            // The clamped (or exactly-fitting) seizure consumes the borrower's
+            // ENTIRE remaining collateral position on this netuid. If debt then
+            // remains on the liquidated market, it is uncollectible and is
+            // written off below.
+            let collateral_exhausted = alpha_principal_to_seize == collateral_pos.alpha_principal
+                && collateral_pos.alpha_principal > 0;
 
             // ── Effects (all before external calls) ──
 
@@ -2182,6 +2341,45 @@ mod lending_pool {
                     .checked_sub(alpha_principal_to_seize)
                     .ok_or(Error::ArithmeticError)?,
             );
+
+            // ── Bad-debt write-off ──
+            // When the borrower's collateral position is fully consumed but
+            // debt remains on the liquidated market, the residual is
+            // uncollectible: the borrower is economically indifferent (their
+            // collateral is gone) and no liquidator will ever cover it. Remove
+            // it from the ledger so utilization and everyone's rates are not
+            // poisoned by phantom debt, and freeze it as a market deficit that
+            // NEVER compounds (it is a face amount, never multiplied by the
+            // borrow index again). The maintainer can later fund it from
+            // reserve_accrued via `cover_deficit`; any remainder stays on the
+            // books as an unfunded shortfall.
+            if collateral_exhausted && pos.scaled_debt > 0 {
+                let deficit_face = scaled_debt_to_face(pos.scaled_debt, state.borrow_index)
+                    .ok_or(Error::ArithmeticError)?;
+                state.total_scaled_debt = state
+                    .total_scaled_debt
+                    .checked_sub(pos.scaled_debt)
+                    .ok_or(Error::ArithmeticError)?;
+                state.total_debt = scaled_debt_to_face(state.total_scaled_debt, state.borrow_index)
+                    .ok_or(Error::ArithmeticError)?;
+                self.markets.insert(debt_market, &state);
+
+                pos.scaled_debt = 0;
+                self.debt_principal.insert((debt_market, borrower), &0);
+                self.positions.insert((debt_market, borrower), &pos);
+                self.update_position_key(debt_market, borrower);
+
+                let deficit = self.market_deficit.get(debt_market).unwrap_or(0);
+                self.market_deficit.insert(
+                    debt_market,
+                    &deficit.checked_add(deficit_face).ok_or(Error::ArithmeticError)?,
+                );
+                self.env().emit_event(DeficitReported {
+                    market: debt_market,
+                    user: borrower,
+                    amount: deficit_face,
+                });
+            }
 
             // ── External calls ──
 
@@ -2381,6 +2579,62 @@ mod lending_pool {
 
             self.set_idle();
             Ok(())
+        }
+
+        /// Covers a market's unfunded bad-debt deficit from `reserve_accrued`.
+        ///
+        /// A deficit is the frozen residual of a write-off (see `liquidate`):
+        /// debt removed from the ledger because the borrower's collateral was
+        /// exhausted. Funding it from the reserve reallocates the treasury's
+        /// reserve claim to close the balance-sheet hole the write-off opened,
+        /// so suppliers' claims stay fully cash-backed. The treasury's
+        /// permissionless `claim_reserve` can drain the reserve first — the
+        /// maintainer should cover deficits before claiming. A deficit that
+        /// exceeds the reserve stays on the books as an unfunded shortfall.
+        /// Maintainer only; a no-op when there is nothing to cover. Errors:
+        /// `Error::NotMaintainer`, `Error::MarketNotFound`,
+        /// `Error::ArithmeticError`.
+        #[ink(message)]
+        pub fn cover_deficit(&mut self, market_id: u8) -> Result<()> {
+            self.ensure_maintainer()?;
+            self.ensure_idle()?;
+
+            self.accrue_interest(market_id).inspect_err(|_| {
+                self.set_idle();
+            })?;
+
+            let deficit = self.market_deficit.get(market_id).unwrap_or(0);
+            if deficit == 0 {
+                self.set_idle();
+                return Ok(());
+            }
+
+            let mut state = self.markets.get(market_id).ok_or(Error::MarketNotFound)?;
+            let cover = min(deficit, state.reserve_accrued);
+            if cover == 0 {
+                self.set_idle();
+                return Ok(());
+            }
+
+            state.reserve_accrued =
+                state.reserve_accrued.checked_sub(cover).ok_or(Error::ArithmeticError)?;
+            self.markets.insert(market_id, &state);
+
+            self.market_deficit
+                .insert(market_id, &deficit.checked_sub(cover).ok_or(Error::ArithmeticError)?);
+
+            self.env().emit_event(DeficitCovered { market: market_id, amount: cover });
+
+            self.set_idle();
+            Ok(())
+        }
+
+        /// Returns the unfunded bad-debt deficit of a market (face units of the
+        /// market's asset, frozen at write-off), or `None` for an unknown
+        /// market.
+        #[ink(message)]
+        pub fn get_market_deficit(&self, market_id: u8) -> Option<Balance> {
+            self.market_deficit.get(market_id)
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -2738,39 +2992,81 @@ mod lending_pool {
         // Surplus sweeps
         // ─────────────────────────────────────────────────────────────
 
-        /// Transfers `amount` of surplus TUSDT from the pool to the treasury.
-        /// Maintainer only. Errors: `Error::NotMaintainer`,
+        /// Transfers up to `amount` of truly surplus TUSDT from the pool to the
+        /// treasury. Maintainer only.
+        ///
+        /// "Surplus" is cash above every committed claim: supplier face value
+        /// (`total_supplied × exchange_rate`), the accrued reserve, and any
+        /// unfunded deficit. The amount is clamped so a sweep can never move
+        /// supplier principal, the reserve, or deficit backing. With debt
+        /// outstanding the pool is fully committed and the claimable surplus is
+        /// zero — sweeps collect only leftovers such as dust and donations.
+        /// Errors: `Error::NotMaintainer`, `Error::MarketNotFound`,
         /// `Error::TokenContractCallFailed`.
         #[ink(message)]
         pub fn claim_surplus_tusdt(&mut self, amount: Balance) -> Result<()> {
             self.ensure_maintainer()?;
+            self.ensure_idle()?;
+
+            let cash = self.market_cash(1)?;
+            let obligations = self.market_obligations(1)?;
+            let claim = min(amount, cash.saturating_sub(obligations));
+            if claim == 0 {
+                self.set_idle();
+                return Ok(());
+            }
             self.tusdt
-                .transfer(self.treasury, amount)
+                .transfer(self.treasury, claim)
                 .map_err(|_| Error::TokenContractCallFailed)?;
-            self.env().emit_event(PoolSurplusTusdtClaimed { recipient: self.treasury, amount });
+            self.env()
+                .emit_event(PoolSurplusTusdtClaimed { recipient: self.treasury, amount: claim });
+            self.set_idle();
             Ok(())
         }
 
         /// Sweeps the pool's native TAO balance to the treasury, minus the
-        /// root-staking liquidity sleeve (`stake_buffer`) and a 1-unit existential
-        /// deposit guard. Maintainer only. Errors: `Error::NotMaintainer`,
-        /// `Error::TransferFailed`.
+        /// market's committed claims (supplier face value, accrued reserve, and
+        /// unfunded deficit), the root-staking liquidity sleeve
+        /// (`stake_buffer`), and a 1-unit existential deposit guard. Maintainer
+        /// only. Errors: `Error::NotMaintainer`, `Error::TransferFailed`.
         #[ink(message)]
         pub fn transfer_native_to_treasury(&mut self) -> Result<()> {
             self.ensure_maintainer()?;
             let Some(amount) = self.treasury_sweepable() else {
-                return Ok(()); // nothing above the sleeve + ED guard to sweep
+                return Ok(()); // nothing above the claims + sleeve + ED guard to sweep
             };
             self.env().transfer(self.treasury, amount).map_err(|_| Error::TransferFailed)?;
             self.env().emit_event(PoolNativeTransferredToTreasury { amount });
             Ok(())
         }
 
+        /// The market's committed claims on its cash: supplier face value
+        /// (`total_supplied × exchange_rate`), the accrued reserve, and any
+        /// unfunded deficit. Sweeps must never touch these. Errors:
+        /// `Error::MarketNotFound`, `Error::ArithmeticError`.
+        pub(crate) fn market_obligations(&self, market_id: u8) -> Result<Balance> {
+            let state = self.markets.get(market_id).ok_or(Error::MarketNotFound)?;
+            let supplier_face = state
+                .exchange_rate
+                .checked_mul_value(state.total_supplied.into())
+                .and_then(|v| Balance::try_from(v).ok())
+                .unwrap_or(0);
+            let reserve = state.reserve_accrued;
+            let deficit = self.market_deficit.get(market_id).unwrap_or(0);
+            supplier_face
+                .checked_add(reserve)
+                .and_then(|s| s.checked_add(deficit))
+                .ok_or(Error::ArithmeticError)
+        }
+
         /// Computes how much free TAO the treasury sweep may take: everything
-        /// above the root-staking liquidity sleeve (`stake_buffer`) minus a
+        /// above the market's committed claims (supplier face, reserve,
+        /// deficit), the root-staking liquidity sleeve (`stake_buffer`), and a
         /// 1-unit existential deposit guard. `None` when nothing may be swept.
         pub(crate) fn treasury_sweepable(&self) -> Option<Balance> {
-            let sweepable = self.env().balance().saturating_sub(self.stake_buffer);
+            let obligations = self.market_obligations(0).unwrap_or(0);
+            let sweepable =
+                self.env().balance().saturating_sub(obligations).saturating_sub(self.stake_buffer);
             if sweepable <= 1 {
                 return None; // keep 1 as existential deposit guard
             }
@@ -3347,6 +3643,7 @@ mod lending_pool {
                 positions: Mapping::default(),
                 position_keys: StorageVec::new(),
                 debt_principal: Mapping::default(),
+                market_deficit: Mapping::default(),
                 root_hotkey: accounts.bob,
                 staked_tao: 0,
                 stake_buffer: DEFAULT_STAKE_BUFFER,
@@ -3381,6 +3678,11 @@ mod lending_pool {
         /// Test-only: directly set a market's state (e.g. to simulate a grown borrow index).
         pub(crate) fn debug_set_market_state(&mut self, market_id: u8, state: MarketState) {
             self.markets.insert(market_id, &state);
+        }
+
+        /// Test-only: directly set a market's unfunded bad-debt deficit.
+        pub(crate) fn debug_set_market_deficit(&mut self, market_id: u8, deficit: Balance) {
+            self.market_deficit.insert(market_id, &deficit);
         }
 
         /// Test-only: push a key into position_keys (simulates legacy

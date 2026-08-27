@@ -137,6 +137,93 @@ impl TusdtLendingPool {
             Ok(())
         }
 
+        /// Charges a new borrow one hour of interest up front — the vault's
+        /// "charge at the hour beginning" model. The returned premium is added
+        /// to the borrowed amount before it is converted to scaled debt, so the
+        /// borrower's debt shows accrued interest from the instant of the
+        /// borrow instead of staying flat until the market crosses its next
+        /// whole-hour boundary. Their next increase then arrives with the
+        /// market's next hourly accrual.
+        ///
+        /// Why the premium is priced here and not in `accrue_interest`: the
+        /// pool's borrow index is GLOBAL, so an accrual cannot single out a
+        /// freshly-opened position. Charging `dt_hours + 1` there would bill
+        /// every existing borrower an extra hour on every call and compound it
+        /// repeatedly. Pricing the premium into the new position's scaled debt
+        /// is the only way to bill exactly the new borrower.
+        ///
+        /// The premium is split exactly like index-driven interest:
+        /// `reserve_factor` to `reserve_accrued`, the remainder to suppliers by
+        /// growing `exchange_rate`. That split has to happen here because a
+        /// scaled-debt bump is invisible to `accrue_interest`'s
+        /// `new_debt - debt_before` diff, so the value would otherwise fall
+        /// through to residual pool cash and reach nobody. With nothing
+        /// supplied there is no exchange rate to grow and the whole premium
+        /// goes to the reserve.
+        ///
+        /// The rate is taken at the utilization the market will have AFTER this
+        /// borrow, since that is the rate the prepaid hour represents. The
+        /// utilization denominator is unchanged by a borrow (debt rises by
+        /// exactly what cash falls by), so only the numerator moves.
+        ///
+        /// Errors: `Error::MarketNotFound`, `Error::ArithmeticError`.
+        pub(crate) fn charge_prepaid_hour(
+            &self,
+            market_id: u8,
+            state: &mut MarketState,
+            amount: Balance,
+        ) -> Result<Balance> {
+            let params = self.market_params.get(market_id).ok_or(Error::MarketNotFound)?;
+            let cash = self.market_cash(market_id)?;
+            let total_liquidity =
+                state.total_debt.checked_add(cash).ok_or(Error::ArithmeticError)?;
+            let projected_debt =
+                state.total_debt.checked_add(amount).ok_or(Error::ArithmeticError)?;
+            let utilization = if total_liquidity == 0 {
+                Ratio::from_inner(0)
+            } else {
+                Ratio::from_integer(projected_debt.into())
+                    .checked_div_int(total_liquidity.into())
+                    .ok_or(Error::ArithmeticError)?
+            };
+            let borrow_rate_annual = Self::compute_borrow_rate(&params, utilization)?;
+            let borrow_rate_hourly = borrow_rate_annual
+                .checked_div_int(tusdt_primitives::HOURS_PER_YEAR)
+                .ok_or(Error::ArithmeticError)?;
+            let premium = borrow_rate_hourly
+                .checked_mul_value(amount.into())
+                .and_then(|v| Balance::try_from(v).ok())
+                .ok_or(Error::ArithmeticError)?;
+            if premium == 0 {
+                // Dust borrow (or a zero rate): nothing to charge or split.
+                return Ok(0);
+            }
+            let supply_share = if state.total_supplied == 0 {
+                0
+            } else {
+                ratio_sub(Ratio::one(), params.reserve_factor)
+                    .and_then(|r| r.checked_mul_value(premium.into()))
+                    .and_then(|v| Balance::try_from(v).ok())
+                    .ok_or(Error::ArithmeticError)?
+            };
+            let reserve_share =
+                premium.checked_sub(supply_share).ok_or(Error::ArithmeticError)?;
+            if supply_share > 0 {
+                // Face value owed to suppliers is `total_supplied × exchange_rate`,
+                // so crediting `supply_share` of face value means growing the rate
+                // by `supply_share / total_supplied` (the same relation
+                // `accrue_interest` inverts to derive `supply_interest`).
+                let delta = Ratio::from_integer(supply_share.into())
+                    .checked_div_int(state.total_supplied.into())
+                    .ok_or(Error::ArithmeticError)?;
+                state.exchange_rate =
+                    ratio_add(state.exchange_rate, delta).ok_or(Error::ArithmeticError)?;
+            }
+            state.reserve_accrued =
+                state.reserve_accrued.checked_add(reserve_share).ok_or(Error::ArithmeticError)?;
+            Ok(premium)
+        }
+
         /// Computes the annual borrow rate (1e18 ratio) for a given utilization
         /// from the market's interest-rate curve: `base_rate + slope1 * min(util,
         /// optimal)/optimal` plus `slope2` applied to the excess above optimal.

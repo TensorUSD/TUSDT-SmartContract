@@ -10,7 +10,7 @@
 
 Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [index.md](index.md) for how errors surface in dedot/dApp/CLI clients.
 
-**Reserved variants** (declared, not returned by any current message): `RepayAmountTooHigh`, `NoAlphaStakeFound`, `OracleCallFailed`, `InvalidCollateralNetuid`, `CloseFactorExceeded`, `PositionNotFound`.
+**Reserved variants** (declared, not returned by any current message): `RepayAmountTooHigh`, `NoAlphaStakeFound`, `OracleCallFailed`, `InvalidCollateralNetuid`, `CloseFactorExceeded`, `PositionNotFound`, `CollateralAwardExceedsPosition` (defensively unreachable since the liquidation clamp fix of 2026-08-26 — the seizure now clamps to available collateral instead of reverting).
 
 Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new variants** — it reuses `NotGovernance`, `InvalidParam`, `LiquidityInsufficient`, `ChainExtensionFailed` (plus the existing pause/reentrancy guards).
 
@@ -304,7 +304,10 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Returned by:** *no production code returns this variant (reserved)*
 
-**Client guidance:** Reserved: declared but not returned by any current message. Report if observed on-chain.
+**Client guidance:** Reserved: declared but not returned by any current message. The
+close-factor cap (and the `full_close_hf_threshold` full-close branch) **clamps**
+the cover instead of erroring, so this variant is expected to stay dead. Report if
+observed on-chain.
 
 ### `CollateralAwardExceedsPosition`
 
@@ -312,9 +315,16 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Group:** Pricing & health
 
-**Returned by:** `liquidate` (message)
+**Returned by:** *defensively unreachable (reserved)* — `liquidate` used to return it
+when the computed alpha seizure exceeded the borrower's position; since 2026-08-26
+the seizure clamps to the available collateral and back-computes the covered debt
+(`clamp_liquidation_seizure`), so this variant is no longer reachable in normal
+operation. The variant is retained for ABI stability.
 
-**Client guidance:** Unexpected liquidation math: report as a contract bug (should not occur with valid inputs).
+**Client guidance:** Reserved: should never be observed after the clamp fix. If it
+appears on-chain, treat it as an unexpected contract bug (the guard at
+`lib.rs:clamp_liquidation_seizure` returns `None` and the liquidation proceeds with
+the clamped seizure).
 
 ### `InvalidRatio`
 

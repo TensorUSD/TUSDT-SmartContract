@@ -62,7 +62,7 @@ Worked example (TAO market, `U = 90%`): `r = 4% + 96% · (0.9−0.8)/(1−0.8) =
 At full utilization the TAO rate is `0 + 4% + 96% = 100%`. Validation caps
 `slope1 + slope2 ≤ 100%` and the total maximum rate at 100% (`validate_interest_params`).
 
-### Interest accrual: hourly discrete compounding
+### Interest accrual: hourly compounding, first hour prepaid
 
 Interest accrues lazily on every state-changing call to a supply/borrow market
 (`accrue_interest`, `rates.rs`):
@@ -90,6 +90,30 @@ Rules: no accrual while `total_debt == 0`, and nothing accrues until a full hour
 remainder carries into the next accrual window instead of being discarded, so frequent
 sub-hour writes can never starve a debt market of interest. A debt-free market tracks the
 latest write's timestamp. Alpha markets (ids ≥ 2) skip accrual entirely.
+
+**First hour prepaid at borrow time.** Because the borrow index is **global** (one per
+market), an accrual cannot single out a freshly-opened position — and the vault's
+per-position "charge at hour beginning" trick is unavailable. Instead, each borrow
+prices one hour of interest into its scaled debt at the moment of borrowing
+(`charge_prepaid_hour`, `rates.rs`):
+
+```
+premium     = (r_annual / 8760) · amount                    # floor, priced at post-borrow utilization
+debt_booked = amount + premium
+scaled      = ceil(debt_booked / borrow_index)              # unchanged rounding
+```
+
+The position's debt therefore exceeds the amount received from the very first block —
+borrow 1 TAO and you immediately owe ~1 TAO + 1 hour's interest — and the next increase
+arrives with the market's next hourly accrual. The premium is split exactly like
+index-driven interest: `reserve_factor` to `reserve_accrued`, the remainder to suppliers
+by growing `exchange_rate` (a scaled-debt bump is invisible to `accrue_interest`'s
+`new_debt − debt_before` diff, so the split must happen at borrow time or the value would
+fall through to residual pool cash). With nothing supplied the whole premium goes to the
+reserve. Repaying inside the first hour does **not** refund it — that is what "charged at
+the hour beginning" means, and it mildly discourages borrow/repay churn.
+`debt_principal` records only `amount`, so `get_user_debt_details` reports the prepaid
+hour as interest from t = 0.
 
 > **Precision note:** all balances are `u64` rao (9 decimals), and every accrual floors to
 > whole rao. A dust debt (e.g. 2 rao) accrues less than 1 rao per hour at realistic rates, so
@@ -201,17 +225,53 @@ collateral_netuid)`. The liquidator repays part of the borrower's debt and seize
 collateral at a discount:
 
 ```
-max_cover_tusdt  = close_factor · borrower_total_debt_value        # default close_factor = 50%
+max_cover_tusdt  = cover_cap · borrower_total_debt_value
+                   # cover_cap = close_factor (default 50%), OR 100% when the
+                   # health factor is below full_close_hf_threshold (default 95%)
 actual_debt_units = min(debt_to_cover, max_cover, debt in that market)
 seizure_value_tusdt = cover_value · (1 + liquidation_bonus)        # default bonus = 5%
 alpha_seized        = seizure_value / collateral_price
 principal_seized    = alpha_seized / yield_index
 ```
 
-The borrower's scaled debt and alpha principal are reduced by the seized amounts, the liquidator
-pays the debt (native TAO via `transferred_value`, or TUSDT via `transfer_from`), and receives
-the alpha stake via chain extension `transfer_stake` (func 6). Seizing more principal than the
-borrower holds reverts with `CollateralAwardExceedsPosition`.
+**The full-close escape hatch.** A position whose health factor has fallen below
+`full_close_hf_threshold` (default 0.95) may be covered up to **100%** of its debt in a
+single liquidation. This is what makes a doomed position closable at all: below
+`HF < liquidation_threshold × (1 + bonus)` — 0.63 at the defaults — every *partial*
+liquidation makes the health factor worse (seizing `x(1+b)` of collateral while retiring
+only `x` of debt), so the 50% cap alone would let a position spiral into permanently
+stranded collateral.
+
+**Collateral clamp instead of a hard error.** If the computed seizure exceeds the
+borrower's collateral, the available principal becomes the binding constraint
+(`clamp_liquidation_seizure`, `risk.rs`):
+
+```
+principal_seized = min(computed, available)                 # the full remaining position
+alpha_seized     = principal_seized · yield_index / 1e18     # floor
+cover_value      = ceil(alpha_seized · price / (1 + bonus))  # debt retired by ≥ collateral's worth
+```
+
+The liquidator is only ever asked to pay for collateral that actually exists, and the
+borrower's debt is retired by at least the seized collateral's worth — the old
+`CollateralAwardExceedsPosition` revert (which stranded both residual debt and residual
+collateral) is no longer reachable in normal operation.
+
+**Bad-debt write-off.** When a liquidation consumes the borrower's entire collateral
+position on a netuid but debt remains on the liquidated market, the residual is
+uncollectible — the borrower is economically indifferent and no liquidator will ever
+cover it. `liquidate` removes it from the ledger (so utilization and everyone's rates are
+not poisoned by phantom debt) and freezes it as a market **deficit** (`DeficitReported`
+event). A deficit is a face amount that **never compounds** — it is not multiplied by the
+borrow index again. The maintainer can fund it from `reserve_accrued` via
+`cover_deficit(market_id)` (the treasury's reserve claim absorbs the loss; a deficit
+larger than the reserve stays on the books as an unfunded shortfall). Read it with
+`get_market_deficit(market_id)` — `None` when nothing is booked.
+
+The borrower's scaled debt and alpha principal are reduced by the covered amounts, the
+liquidator pays the debt (native TAO via `transferred_value`, or TUSDT via
+`transfer_from`), and receives the alpha stake via chain extension `transfer_stake`
+(func 6).
 
 ### Alpha yield claim
 
@@ -316,13 +376,17 @@ The union accounting is also what keeps borrows and withdrawals servable up to `
 beyond the free balance (via the top-up path above). TUSDT (market 1) is untouched.
 
 **Outflow caps.** Two outflows are capped so neither can drain the free sleeve below its
-buffer or force a root unstake:
+buffer, force a root unstake, or move cash that is already committed to suppliers:
 
 - `claim_reserve(market_id)` — the interest reserve can be claimed only up to the market's
   **free balance**; it never reaches into root stake.
-- `transfer_native_to_treasury` — surplus TAO sweeps to the treasury are capped at
-  `balance − stake_buffer`, preserving the withdrawal buffer and leaving the root sleeve
-  alone.
+- `transfer_native_to_treasury` / `claim_surplus_tusdt` — treasury sweeps are capped at the
+  market's cash **minus all committed claims** (`market_obligations` = supplier face value
+  `total_supplied × exchange_rate` + `reserve_accrued` + unfunded deficit), then minus
+  `stake_buffer` and the 1-rao existential-deposit guard for the native sweep. Because a
+  market's cash is fully committed whenever debt is outstanding (`cash = supplier_face +
+  reserve − debt`), these sweeps normally collect nothing — only leftovers such as dust and
+  donations. Neither can ever move supplier principal, the reserve, or deficit backing.
 
 **Risks and mitigations.**
 
@@ -370,7 +434,10 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
    `alpha_principal`. This gives you borrowing power.
 3. **Borrow** — `borrow_tao(amount)` or `borrow_tusdt(amount)` against your alpha collateral, up
    to `min_collateral_factor · collateral − debt` (`BorrowHealthExceeded`), limited by market
-   cash (`LiquidityInsufficient`) and borrow caps (`BorrowCapExceeded`).
+   cash (`LiquidityInsufficient`) and borrow caps (`BorrowCapExceeded`). **One hour of
+   interest is charged up front** — your debt exceeds the amount from this block onward, and
+   the next increase arrives with the market's next hourly accrual. Repaying inside that
+   first hour does not refund it.
 4. **Repay** — `repay_tao(amount)` (payable) or `repay_tusdt(amount)` (`transfer_from`).
    Repayment clamps to your current debt; repaid assets stay in the pool as liquidity (and
    may be swept to the root subnet).
@@ -382,7 +449,10 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
    treasury, 75% raises your collateral's yield index. Also `claim_reserve(market_id)` for the
    interest reserve.
 7. **Liquidate** — when a borrower's health factor is below 1.0, anyone can call `liquidate` to
-   repay up to 50% of their debt and seize alpha collateral at a 5% bonus.
+   repay up to 50% of their debt (up to **100%** when the health factor is below 0.95) and
+   seize alpha collateral at a 5% bonus. The seizure is clamped to the collateral that
+   actually exists; if a liquidation consumes all of it with debt remaining, the residual is
+   written off as a market deficit.
 8. **Root-subnet staking (keeper)** — anyone can call `sweep()` (rate-limited to once per
    block) to stake excess idle TAO into the root subnet; governance configures and enables
    the feature via `set_root_stake_config`.
@@ -400,6 +470,7 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
 | `liquidation_threshold` | Health-factor denominator per netuid | 6000 (60%) | bps |
 | `liquidation_bonus` | Discount liquidators receive | 500 (5%) | bps |
 | `close_factor` | Max share of debt per liquidation | 5000 (50%) | bps |
+| `full_close_hf_threshold` | HF below which a liquidation may cover 100% | 9500 (95%) | bps |
 | `performance_fee` | Alpha-yield cut to the treasury | 2500 (25%) | bps |
 | `max_oracle_age_ms` | Max age of an acceptable price | 1_800_000 (30 min) | ms |
 | `supply_cap_tao / _tusdt` | Max supplied per market (0 = unlimited) | 0 | Balance |
@@ -434,7 +505,13 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
 All 43 fieldless error variants are catalogued with guidance in the
 [error reference](../errors/lending-pool.md). Notable ones: `BorrowHealthExceeded`,
 `LiquidityInsufficient`, `HealthFactorBelowThreshold`, `NotLiquidatable`,
-`ParamsUpdateTimelockActive`, `SupplyCapExceeded`.
+`ParamsUpdateTimelockActive`, `SupplyCapExceeded`. `CollateralAwardExceedsPosition` is
+now **defensively unreachable** (liquidation clamps instead of reverting) but the variant
+is retained for ABI stability.
 
 Root-subnet staking adds **no new error variants** — invalid `set_root_stake_config`
-parameters and sweep/top-up failures reuse the existing catalogue.
+parameters and sweep/top-up failures reuse the existing catalogue. The Phase 1–2 work
+(up-front borrow interest, liquidation clamp, full-close threshold, bad-debt deficit)
+also adds **no new error variants**; the new messages are `cover_deficit` (maintainer)
+and the read `get_market_deficit`, and the new events are `DeficitReported` and
+`DeficitCovered`.
