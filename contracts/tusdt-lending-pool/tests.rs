@@ -1027,6 +1027,74 @@ fn yield_index_defaults_to_one() {
     assert_eq!(idx, Ratio::one());
 }
 
+#[ink::test]
+fn claim_alpha_yield_unstakes_full_excess_to_free_balance() {
+    let (mut pool, accounts) = setup_with_alpha(1);
+    set_caller(accounts.alice);
+    register_mock(1_000);
+    pool.deposit_alpha(1, 500).unwrap();
+
+    // Mock reports 1_000 available; booked = 1.0 × 500 = 500 → excess 500.
+    set_caller(accounts.charlie); // permissionless
+    pool.claim_alpha_yield(1).unwrap();
+
+    // The FULL excess (500) was unstaked (func 2) from the pool hotkey into
+    // the pool's free balance — no fee split, no index credit.
+    let record = last_ext_call().unwrap();
+    assert_eq!(record.func_id, 2);
+    assert_eq!(record.hotkey, accounts.bob); // pool_hotkey
+    assert_eq!(record.netuid, 1);
+    assert_eq!(record.amount, 500);
+    assert_eq!(pool.get_alpha_yield_index(1).unwrap(), Ratio::one());
+}
+
+#[ink::test]
+fn claim_alpha_yield_noop_when_no_excess() {
+    let (mut pool, accounts) = setup_with_alpha(1);
+    set_caller(accounts.alice);
+    register_mock(500);
+    pool.deposit_alpha(1, 500).unwrap();
+
+    // Mock reports exactly the booked amount — no excess, no unstake.
+    set_caller(accounts.charlie);
+    pool.claim_alpha_yield(1).unwrap();
+    assert!(last_ext_call().is_none()); // no remove_stake was issued
+    assert_eq!(pool.get_alpha_yield_index(1).unwrap(), Ratio::one());
+}
+
+#[ink::test]
+fn claim_alpha_yield_recovers_orphan_stake_when_no_positions() {
+    let (mut pool, _accounts) = setup_with_alpha(1);
+    // Mock reports stake but no positions exist (e.g. stranded by a hotkey
+    // migration): the whole stake is excess and is recovered to free balance.
+    register_mock(1_000);
+    pool.claim_alpha_yield(1).unwrap();
+    let record = last_ext_call().unwrap();
+    assert_eq!(record.func_id, 2);
+    assert_eq!(record.amount, 1_000);
+}
+
+#[ink::test]
+fn claim_alpha_yield_rejects_unapproved_netuid() {
+    let (mut pool, _accounts) = setup();
+    register_mock(1_000);
+    assert_eq!(pool.claim_alpha_yield(99), Err(Error::UnapprovedNetuid));
+}
+
+#[ink::test]
+fn reserve_claimable_never_touches_deficit_backing() {
+    // Deficit consumes the reserve entirely → nothing claimable.
+    assert_eq!(reserve_claimable(100_000_000, 200_000_000, 500_000_000), 0);
+    // Reserve above the deficit, capped by cash.
+    assert_eq!(reserve_claimable(1_000_000_000, 300_000_000, 500_000_000), 500_000_000);
+    // No deficit — the whole reserve is claimable, capped by cash.
+    assert_eq!(reserve_claimable(1_000_000_000, 0, 500_000_000), 500_000_000);
+    // Cash is the binding constraint.
+    assert_eq!(reserve_claimable(1_000_000_000, 0, 900_000_000), 900_000_000);
+    // With ample cash, exactly reserve − deficit is claimable.
+    assert_eq!(reserve_claimable(1_000_000_000, 300_000_000, 1_500_000_000), 700_000_000);
+}
+
 // ---------------------------------------------------------------------------
 // Pool hotkey
 // ---------------------------------------------------------------------------

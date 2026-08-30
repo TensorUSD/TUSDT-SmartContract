@@ -914,13 +914,22 @@ mod vault {
         }
 
         /// Transfers surplus TUSDT held by the vault contract to the treasury.
-        /// Callable by governance or platform.
+        /// Callable by governance or platform. The claim is clamped to the
+        /// vault's actual TUSDT balance: every TUSDT the vault holds is
+        /// settlement surplus by construction (winning bid minus burned debt),
+        /// and the clamp makes that structural so a future committed-balance
+        /// path can never be swept.
         #[ink(message)]
         pub fn claim_surplus_tusdt(&mut self, amount: Balance) -> Result<()> {
             self.ensure_governance_or_platform()?;
-            self.token.transfer(self.treasury, amount).map_err(|_| Error::TransferFailed)?;
+            let balance = self.token.balance_of(self.env().account_id());
+            let claim = amount.min(balance);
+            if claim == 0 {
+                return Ok(());
+            }
+            self.token.transfer(self.treasury, claim).map_err(|_| Error::TransferFailed)?;
 
-            self.env().emit_event(SurplusTusdtClaimed { recipient: self.treasury, amount });
+            self.env().emit_event(SurplusTusdtClaimed { recipient: self.treasury, amount: claim });
 
             Ok(())
         }
@@ -1400,7 +1409,15 @@ mod vault {
             let mut vault = self.load_vault(owner, vault_id)?;
             let collateral_sold = auction.collateral_balance;
             let transaction_fee = self.calculate_transaction_fee(collateral_sold)?;
-            let debt_cleared = auction.debt_balance;
+            // `auction.debt_balance` is a snapshot from trigger time, but the
+            // borrower can repay during the auction (repay_token has no
+            // liquidation guard). Clamp to the current debt so settlement
+            // never reverts on the snapshot: without this, a mid-auction
+            // partial repay bricked the auction forever (checked_sub
+            // underflow), stranding the winner's bid, the collateral TAO, and
+            // the active_liquidation_count gate. The unburned difference
+            // (winning_bid − debt_cleared) is settlement surplus in the vault.
+            let debt_cleared = min(auction.debt_balance, vault.borrowed_token_balance);
 
             // ── Effects first (CEI): collateral was already zeroed in
             //     trigger_liquidation_auction. Only vault debt state and the

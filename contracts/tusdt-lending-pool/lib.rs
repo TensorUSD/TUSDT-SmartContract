@@ -113,6 +113,15 @@ mod lending_pool {
         index.checked_mul_value(scaled.into()).and_then(|v| Balance::try_from(v).ok())
     }
 
+    /// The portion of `reserve` the treasury may claim: everything above the
+    /// market's unfunded deficit (which outranks the treasury claim — see
+    /// `cover_deficit`), capped at the physical cash available. `0` when the
+    /// deficit consumes the whole reserve, so a permissionless reserve claim
+    /// can never strip the deficit's backing and leave suppliers short.
+    pub(crate) fn reserve_claimable(reserve: Balance, deficit: Balance, cash: Balance) -> Balance {
+        reserve.saturating_sub(deficit).min(cash)
+    }
+
     /// Computes a health factor as a 1e18 `Ratio`:
     /// `(liquidation_threshold × collateral_value) / debt_value`.
     ///
@@ -421,22 +430,17 @@ mod lending_pool {
         pub liquidator: AccountId,
     }
 
-    /// Emitted when excess alpha staking yield is claimed for a netuid.
+    /// Emitted when excess alpha staking yield is unstaked into the pool's
+    /// free native balance for a netuid.
     #[ink(event)]
     pub struct AlphaYieldClaimed {
         /// Subnet the yield was claimed for.
         #[ink(topic)]
         pub netuid: u16,
-        /// Excess alpha found beyond booked collateral.
+        /// Excess alpha found beyond booked collateral, unstaked in full.
         pub excess_alpha: Balance,
-        /// Performance fee (25%) unstaked to TAO.
-        pub performance_fee_alpha: Balance,
-        /// TAO sent to the treasury after unstaking the fee.
+        /// Native TAO received into the pool's free balance from unstaking.
         pub tao_received: Balance,
-        /// Yield index (1e18) before the claim.
-        pub index_before: u128,
-        /// Yield index (1e18) after the claim.
-        pub index_after: u128,
     }
 
     /// Emitted when protocol reserve fees are claimed for a market.
@@ -2256,6 +2260,13 @@ mod lending_pool {
             )?;
             let (alpha_to_seize, alpha_principal_to_seize, _cover_value_tusdt, actual_debt_units) =
                 match clamped {
+                    // Unclamped path — the booked-collateral invariant holds by
+                    // construction: compute_liquidation_seizure derives
+                    // p2s = floor(a2s / yield_index), so
+                    // a2s >= floor(yield_index × p2s) always. The booked
+                    // collateral (yi × principal) therefore never drops by
+                    // more than the stake actually removed — excess can never
+                    // be inflated by a liquidation.
                     None => (
                         alpha_to_seize,
                         alpha_principal_to_seize,
@@ -2431,9 +2442,19 @@ mod lending_pool {
         // Permissionless fee claims
         // ─────────────────────────────────────────────────────────────
 
-        /// Claims accumulated alpha staking yield. 25% (performance fee) is unstaked to TAO
-        /// and sent to the treasury. 75% is credited to the per-netuid yield index, increasing
-        /// all borrowers' effective collateral proportionally.
+        /// Unstakes the full excess alpha staking yield into the pool's free
+        /// native balance.
+        ///
+        /// Excess = actual available stake on the netuid minus booked
+        /// collateral (`netuid_yield_index × netuid_total_collateral` — every
+        /// position's effective collateral). The excess is unstaked via the
+        /// chain extension and lands in the pool's free TAO balance. No
+        /// transfer to the treasury happens here: the free balance joins the
+        /// pool's cash, and the obligations-aware treasury paths
+        /// (`claim_reserve`, `transfer_native_to_treasury`,
+        /// `claim_surplus_tusdt`) move it out. Permissionless: anyone may
+        /// trigger the unstake; a second call finds no excess until new yield
+        /// accrues.
         #[ink(message)]
         pub fn claim_alpha_yield(&mut self, netuid: u16) -> Result<()> {
             self.ensure_idle()?;
@@ -2451,7 +2472,7 @@ mod lending_pool {
                     Error::ChainExtensionFailed
                 })?;
 
-            // Compute booked collateral
+            // Compute booked collateral (every position's effective collateral)
             let total_principal = self.netuid_total_collateral.get(netuid).unwrap_or_default();
             let yield_index = self.netuid_yield_index.get(netuid).unwrap_or(Ratio::one());
             let booked = yield_index
@@ -2459,7 +2480,9 @@ mod lending_pool {
                 .and_then(|v| Balance::try_from(v).ok())
                 .unwrap_or(0);
 
-            // Excess = actual available − booked
+            // Excess = actual available − booked. With zero positions (e.g.
+            // orphaned stake after a hotkey migration) the whole stake is
+            // excess and is recovered into the pool's free balance.
             if availability.available <= booked {
                 self.set_idle();
                 return Ok(()); // no excess, no-op
@@ -2467,67 +2490,31 @@ mod lending_pool {
             let excess =
                 availability.available.checked_sub(booked).ok_or(Error::ArithmeticError)?;
 
-            // Split: 25% → treasury (via unstake), 75% → borrowers (stays staked, index grows)
-            let fee_alpha = self
-                .global_params
-                .performance_fee
-                .checked_mul_value(excess.into())
-                .and_then(|v| Balance::try_from(v).ok())
-                .unwrap_or(0);
-            let credited = excess.saturating_sub(fee_alpha);
+            // Unstake the full excess to native TAO into the pool's free
+            // balance. No transfer to the treasury: the free balance is the
+            // pool's cash and is moved by the obligations-aware treasury
+            // paths (claim_reserve / transfer_native_to_treasury).
+            let balance_before = self.env().balance();
+            self.env().extension().remove_stake(self.pool_hotkey, netuid, excess).map_err(
+                |_| {
+                    self.set_idle();
+                    Error::ChainExtensionFailed
+                },
+            )?;
+            let balance_after = self.env().balance();
+            let tao_received =
+                balance_after.checked_sub(balance_before).ok_or(Error::ArithmeticError)?;
 
-            let tao_received = if fee_alpha > 0 {
-                let balance_before = self.env().balance();
-                self.env().extension().remove_stake(self.pool_hotkey, netuid, fee_alpha).map_err(
-                    |_| {
-                        self.set_idle();
-                        Error::ChainExtensionFailed
-                    },
-                )?;
-                let balance_after = self.env().balance();
-                let tao =
-                    balance_after.checked_sub(balance_before).ok_or(Error::ArithmeticError)?;
-                if tao > 0 {
-                    self.env().transfer(self.treasury, tao).map_err(|_| Error::TransferFailed)?;
-                }
-                tao
-            } else {
-                0
-            };
-
-            // Update yield index: new_index = (booked + credited) / total_principal
-            let index_before = yield_index.into_inner();
-            if credited > 0 && total_principal > 0 {
-                let new_booked = booked.checked_add(credited).ok_or(Error::ArithmeticError)?;
-                let new_index = Ratio::from_integer(new_booked.into())
-                    .checked_div_int(total_principal.into())
-                    .ok_or(Error::ArithmeticError)?;
-                self.netuid_yield_index.insert(netuid, &new_index);
-                self.env().emit_event(AlphaYieldClaimed {
-                    netuid,
-                    excess_alpha: excess,
-                    performance_fee_alpha: fee_alpha,
-                    tao_received,
-                    index_before,
-                    index_after: new_index.into_inner(),
-                });
-            } else if fee_alpha > 0 {
-                self.env().emit_event(AlphaYieldClaimed {
-                    netuid,
-                    excess_alpha: excess,
-                    performance_fee_alpha: fee_alpha,
-                    tao_received,
-                    index_before,
-                    index_after: index_before,
-                });
-            }
+            self.env().emit_event(AlphaYieldClaimed { netuid, excess_alpha: excess, tao_received });
 
             self.set_idle();
             Ok(())
         }
 
         /// Claims accumulated protocol reserve fees for a supply/borrow market.
-        /// Sends the fees to the treasury. Permissionless.
+        /// Sends the fees to the treasury. Permissionless; the claim is
+        /// clamped to reserve above the market's unfunded deficit (which
+        /// outranks the treasury claim) and to the physical cash available.
         #[ink(message)]
         pub fn claim_reserve(&mut self, market_id: u8) -> Result<()> {
             self.ensure_idle()?;
@@ -2544,17 +2531,28 @@ mod lending_pool {
             }
 
             // Cap at physical cash available. For TAO, only the free native balance
-            // counts — TAO staked on the root subnet is not claimable without an
-            // unstake, and reserve claims must never drain the liquidity sleeve.
+            // above the root-staking liquidity sleeve counts — TAO staked on the
+            // root subnet is not claimable without an unstake, and reserve claims
+            // must never drain the liquidity sleeve.
             let cash = match market_id {
-                0 => self.env().balance(),
+                0 => self.env().balance().saturating_sub(self.stake_buffer),
                 1 => self.market_cash(1)?,
                 _ => {
                     self.set_idle();
                     return Err(Error::MarketNotFound);
                 },
             };
-            let claim = min(claimable, cash);
+            // The deficit outranks the treasury's reserve claim (see
+            // `cover_deficit`): claim only reserve above the unfunded deficit,
+            // or a permissionless caller could strip the deficit's backing and
+            // permanently under-back suppliers. No-op when the deficit
+            // consumes the reserve.
+            let deficit = self.market_deficit.get(market_id).unwrap_or(0);
+            let claim = reserve_claimable(claimable, deficit, cash);
+            if claim == 0 {
+                self.set_idle();
+                return Ok(());
+            }
 
             state.reserve_accrued =
                 state.reserve_accrued.checked_sub(claim).ok_or(Error::ArithmeticError)?;
@@ -2939,6 +2937,12 @@ mod lending_pool {
         }
 
         /// Migrates the pool's staking hotkey, moving all alpha stake to a new hotkey.
+        ///
+        /// Moves the full AVAILABLE stake per netuid — booked collateral
+        /// (yield-index-credited principal) plus any unclaimed excess — not
+        /// just principal. Moving principal alone would strand the
+        /// yield-credited portion under the old hotkey, where removals and
+        /// withdrawals (which target `pool_hotkey` only) can never reach it.
         #[ink(message)]
         pub fn update_pool_hotkey(
             &mut self,
@@ -2951,11 +2955,15 @@ mod lending_pool {
             }
             let old_hotkey = self.pool_hotkey;
             for netuid in netuids {
-                let total = self.netuid_total_collateral.get(netuid).unwrap_or_default();
-                if total > 0 {
+                let availability = self
+                    .env()
+                    .extension()
+                    .get_stake_availability(self.env().account_id(), netuid)
+                    .map_err(|_| Error::ChainExtensionFailed)?;
+                if availability.available > 0 {
                     self.env()
                         .extension()
-                        .move_stake(old_hotkey, new_hotkey, netuid, netuid, total)
+                        .move_stake(old_hotkey, new_hotkey, netuid, netuid, availability.available)
                         .map_err(|_| Error::ChainExtensionFailed)?;
                 }
             }
@@ -3008,6 +3016,13 @@ mod lending_pool {
             self.ensure_maintainer()?;
             self.ensure_idle()?;
 
+            // Accrue first so the obligations clamp reads a fresh exchange
+            // rate: a stale one understates supplier face and would let the
+            // sweep take cash the next accrual commits to suppliers.
+            self.accrue_interest(1).inspect_err(|_| {
+                self.set_idle();
+            })?;
+
             let cash = self.market_cash(1)?;
             let obligations = self.market_obligations(1)?;
             let claim = min(amount, cash.saturating_sub(obligations));
@@ -3032,6 +3047,9 @@ mod lending_pool {
         #[ink(message)]
         pub fn transfer_native_to_treasury(&mut self) -> Result<()> {
             self.ensure_maintainer()?;
+            // Accrue first so the obligations clamp reads a fresh exchange
+            // rate (see claim_surplus_tusdt).
+            self.accrue_interest(0)?;
             let Some(amount) = self.treasury_sweepable() else {
                 return Ok(()); // nothing above the claims + sleeve + ED guard to sweep
             };
