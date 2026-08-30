@@ -280,13 +280,13 @@ Alpha collateral keeps earning staking yield. Anyone can call `claim_alpha_yield
 ```
 booked  = yield_index · netuid_total_collateral / 1e18
 excess  = available_stake (func 36) − booked          # no-op if ≤ 0
-fee     = performance_fee · excess                    # default 25% → unstaked (func 2) → treasury
-credited = excess − fee                               # 75% stays staked
-new_index = (booked + credited) / netuid_total_collateral
 ```
 
-The credited 75% raises the yield index, proportionally increasing every borrower's effective
-collateral (and therefore their borrow capacity) on that subnet.
+The **full excess** is unstaked (func 2) into the pool's free native balance — no fee is
+split off and the yield index is untouched. The unstaked TAO joins the pool's cash and is
+moved out only by the obligations-aware treasury paths (`claim_reserve`,
+`transfer_native_to_treasury`, `claim_surplus_tusdt`), which never touch supplier backing,
+the accrued reserve, or an unfunded deficit.
 
 ### Idle TAO root-subnet staking
 
@@ -445,9 +445,10 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
    (liquidity permitting; a TAO shortfall is topped up synchronously from root stake);
    `withdraw_alpha(netuid, amount, dest_coldkey)` returns alpha stake
    via func 6, but only while you stay healthy (`HealthFactorBelowThreshold`).
-6. **Claim alpha yield** — `claim_alpha_yield(netuid)`: 25% of excess staking yield goes to the
-   treasury, 75% raises your collateral's yield index. Also `claim_reserve(market_id)` for the
-   interest reserve.
+6. **Claim alpha yield** — `claim_alpha_yield(netuid)`: unstakes the full excess staking
+   yield into the pool's free balance (no fee split); the treasury moves it out via
+   `claim_reserve(market_id)` / `transfer_native_to_treasury`. `claim_reserve` also claims
+   the interest reserve.
 7. **Liquidate** — when a borrower's health factor is below 1.0, anyone can call `liquidate` to
    repay up to 50% of their debt (up to **100%** when the health factor is below 0.95) and
    seize alpha collateral at a 5% bonus. The seizure is clamped to the collateral that
@@ -471,7 +472,7 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
 | `liquidation_bonus` | Discount liquidators receive | 500 (5%) | bps |
 | `close_factor` | Max share of debt per liquidation | 5000 (50%) | bps |
 | `full_close_hf_threshold` | HF below which a liquidation may cover 100% | 9500 (95%) | bps |
-| `performance_fee` | Alpha-yield cut to the treasury | 2500 (25%) | bps |
+| `performance_fee` | Alpha-yield cut (deprecated — `claim_alpha_yield` unstakes the full excess; kept for ABI compat) | 2500 (25%) | bps |
 | `max_oracle_age_ms` | Max age of an acceptable price | 1_800_000 (30 min) | ms |
 | `supply_cap_tao / _tusdt` | Max supplied per market (0 = unlimited) | 0 | Balance |
 | `borrow_cap_tao / _tusdt` | Max debt per market (0 = unlimited) | 0 | Balance |
@@ -492,7 +493,8 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
 - **TUSDT token** — `transfer_from` on supply/repay/liquidation; `transfer` on borrow/withdraw.
 - **Oracle** — `get_latest_price()` for TUSDT/TAO, freshness-checked against
   `max_oracle_age_ms` (`OraclePriceStale`).
-- **Treasury** — receives the interest reserve, the alpha performance fee, and surplus sweeps.
+- **Treasury** — receives the interest reserve (via `claim_reserve`) and obligations-aware
+  surplus sweeps (`transfer_native_to_treasury`, `claim_surplus_tusdt`).
 - **Root subnet (netuid 0)** — holds the pool's idle-TAO stake (`add_stake` (1),
   `remove_stake` (2)); the contract is its own coldkey, staking under `root_hotkey`.
 - **Chain extension** — `get_alpha_price` (15), `caller_transfer_stake` (25),
