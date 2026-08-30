@@ -19,7 +19,8 @@
     "governance:upload": "node --import tsx scripts/uploadContract.ts --contract governance",
     "election:upload": "node --import tsx scripts/uploadContract.ts --contract election",
     "vault:deploy": "node --import tsx scripts/deployVault.ts",
-    "test:oracle": "vitest run e2e/oracle.test.ts"
+    "test:oracle": "vitest run e2e/oracle.test.ts",
+    "test:liquidation": "vitest run e2e/lending-liquidation.test.ts"
   },
   "dependencies": {
     "@polkadot/api": "latest",

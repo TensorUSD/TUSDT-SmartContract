@@ -14,7 +14,7 @@ every error name links into the catalog in [`../errors/`](../errors/index.md).
 | Guide | What it walks through |
 |---|---|
 | [vault-alpha.md](vault-alpha.md) | CDP vault: alpha pricing, max borrow, LTV, the strict liquidation boundary, the full auction (min bid → settle fee split), parameter sensitivity, fee/boundary cases. |
-| [lending-pool.md](lending-pool.md) | Lending pool: the rate curve and APY derivation, hourly interest accrual with a full lifecycle example, scaled debt and the ceil/floor pairing, lTokens and the exchange rate, health factor and borrow capacity, both liquidation variants, and edge cases. |
+| [lending-pool.md](lending-pool.md) | Lending pool: the rate curve and APY derivation, hourly interest accrual with a prepaid first hour and a full lifecycle example, scaled debt and the ceil/floor pairing, lTokens and the exchange rate, health factor and borrow capacity, liquidation (close factor, full-close threshold, collateral clamp, bad-debt write-off), and edge cases. |
 
 ## Where each question is answered
 
@@ -32,7 +32,7 @@ every error name links into the catalog in [`../errors/`](../errors/index.md).
 | Question | Section |
 |---|---|
 | How is APY calculated? | [§1 The interest-rate curve](lending-pool.md#1-the-interest-rate-curve-how-apy-is-calculated) |
-| How does interest accrue? | [§2 Hourly discrete compounding](lending-pool.md#2-how-interest-accrues-hourly-discrete-compounding) |
+| How does interest accrue? | [§2 Hourly compounding, first hour prepaid](lending-pool.md#2-how-interest-accrues-hourly-compounding-first-hour-prepaid) |
 | How is my debt tracked? | [§3 Scaled units, index, principal](lending-pool.md#3-your-debt-scaled-units-index-principal) |
 | How do lTokens earn? | [§4 Supplying: lTokens and the exchange rate](lending-pool.md#4-supplying-ltokens-and-the-exchange-rate) |
 | When am I liquidated, and what must I do? | [§5 Health factor](lending-pool.md#5-health-factor-and-how-much-you-can-borrow) + [§6 Liquidation](lending-pool.md#6-liquidation-when-how-and-what-everyone-must-do) |

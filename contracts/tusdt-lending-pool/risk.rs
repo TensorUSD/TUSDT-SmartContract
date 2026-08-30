@@ -162,6 +162,55 @@ impl TusdtLendingPool {
         Ok((alpha_to_seize, alpha_principal_to_seize))
     }
 
+    /// Clamps a liquidation seizure to the borrower's available collateral and
+    /// back-computes the debt the seized collateral actually covers.
+    ///
+    /// When the un-clamped seizure would exceed the position, the available
+    /// principal is the binding constraint: the liquidator receives at most the
+    /// borrower's entire remaining collateral, so they may only be asked to pay
+    /// for what they actually receive. Returns `None` when no clamp is needed,
+    /// or `Some((alpha_to_seize, alpha_principal_to_seize, cover_value_tusdt))`
+    /// with the clamped values and the back-computed covered debt value.
+    ///
+    /// Rounding is protocol-favourable throughout (Aave's Ceil direction on the
+    /// debt back-computation): the effective alpha seized floors, and the
+    /// covered debt value is `collateral_value / (1 + bonus)` rounded UP, so
+    /// the borrower's debt is retired by at least the collateral's worth and
+    /// the liquidator can never be subsidised by rounding.
+    ///
+    /// Errors: `Error::ArithmeticError`.
+    pub(crate) fn clamp_liquidation_seizure(
+        collateral_price: Ratio,
+        bonus_multiplier: Ratio,
+        yield_index: Ratio,
+        available_principal: Balance,
+        _alpha_to_seize: Balance,
+        alpha_principal_to_seize: Balance,
+    ) -> Result<Option<(Balance, Balance, Balance)>> {
+        if alpha_principal_to_seize <= available_principal {
+            return Ok(None);
+        }
+        // Principal is the binding constraint: seize the full remaining
+        // position and re-derive the effective alpha actually transferred.
+        let principal = available_principal;
+        let effective = yield_index
+            .checked_mul_value(principal.into())
+            .and_then(|v| Balance::try_from(v).ok())
+            .ok_or(Error::ArithmeticError)?;
+        // The seized collateral's TUSDT value at the current price.
+        let collateral_value = collateral_price
+            .checked_mul_value(effective.into())
+            .and_then(|v| Balance::try_from(v).ok())
+            .ok_or(Error::ArithmeticError)?;
+        // cover = collateral_value / (1 + bonus), rounded UP: the liquidator
+        // pays for the collateral at the bonus rate, never better.
+        let cover_value_tusdt = bonus_multiplier
+            .checked_div_value_ceil(collateral_value.into())
+            .and_then(|v| Balance::try_from(v).ok())
+            .ok_or(Error::ArithmeticError)?;
+        Ok(Some((effective, principal, cover_value_tusdt)))
+    }
+
     /// Computes the user's total alpha collateral value in TUSDT (9-decimal
     /// units) across all approved netuids, priced at current oracle rates.
     /// Errors: `Error::MarketNotFound`, `Error::ArithmeticError`, plus
@@ -247,9 +296,7 @@ impl TusdtLendingPool {
             return Ok(Some(Ratio::from_inner(0)));
         }
         let threshold = self.max_liquidation_threshold_for_user(user)?;
-        let health = threshold
-            .checked_mul_value(collateral_value.into())
-            .and_then(|v| Ratio::from_inner(v).checked_div_int(debt_value.into()))
+        let health = health_factor_from_values(threshold, collateral_value, debt_value)
             .ok_or(Error::ArithmeticError)?;
         Ok(Some(health))
     }
