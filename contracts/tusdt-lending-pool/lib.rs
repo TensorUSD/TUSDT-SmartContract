@@ -210,7 +210,6 @@ mod lending_pool {
         /// Scaled debt: actual_debt = scaled_debt × market.borrow_index.
         pub scaled_debt: Balance,
         /// Alpha principal units deposited (alpha markets only).
-        /// Effective collateral = alpha_principal × netuid_yield_index.
         pub alpha_principal: Balance,
     }
 
@@ -281,9 +280,6 @@ mod lending_pool {
         // ── Alpha custody accounting ──
         /// Total alpha principal per netuid (Σ user alpha_principal).
         netuid_total_collateral: Mapping<u16, Balance>,
-        /// Per-netuid yield accumulator for alpha performance fee.
-        /// Effective collateral = alpha_principal × yield_index.
-        netuid_yield_index: Mapping<u16, Ratio>,
 
         // ── User positions ──
         /// Per-(market_id, user) position.
@@ -403,7 +399,7 @@ mod lending_pool {
         pub user: AccountId,
         /// Alpha principal withdrawn (9-decimal units).
         pub amount: Balance,
-        /// Effective alpha withdrawn (principal x yield index).
+        /// Effective alpha withdrawn (equals the principal withdrawn).
         pub effective: Balance,
         /// Coldkey that received the transferred stake.
         #[ink(topic)]
@@ -423,24 +419,27 @@ mod lending_pool {
         pub debt_market: u8,
         /// Debt units repaid by the liquidator.
         pub debt_covered: Balance,
-        /// Effective alpha seized (before yield-index conversion).
+        /// Effective alpha seized (equals the principal seized).
         pub collateral_alpha: Balance,
         /// Account that performed the liquidation.
         #[ink(topic)]
         pub liquidator: AccountId,
     }
 
-    /// Emitted when excess alpha staking yield is unstaked into the pool's
-    /// free native balance for a netuid.
+    /// Emitted when excess alpha staking is unstaked in full for a netuid and
+    /// the resulting native TAO is sent to the treasury.
     #[ink(event)]
-    pub struct AlphaYieldClaimed {
-        /// Subnet the yield was claimed for.
+    pub struct AlphaExcessClaimed {
+        /// Subnet the excess was claimed for.
         #[ink(topic)]
         pub netuid: u16,
         /// Excess alpha found beyond booked collateral, unstaked in full.
         pub excess_alpha: Balance,
-        /// Native TAO received into the pool's free balance from unstaking.
+        /// Native TAO received from unstaking, forwarded to the treasury.
         pub tao_received: Balance,
+        /// Treasury that received the unstaked TAO.
+        #[ink(topic)]
+        pub recipient: AccountId,
     }
 
     /// Emitted when protocol reserve fees are claimed for a market.
@@ -852,7 +851,6 @@ mod lending_pool {
                 global_params: default_global_params(),
                 pending_global_params: None,
                 netuid_total_collateral: Mapping::default(),
-                netuid_yield_index: Mapping::default(),
                 positions: Mapping::default(),
                 position_keys: StorageVec::new(),
                 debt_principal: Mapping::default(),
@@ -919,7 +917,6 @@ mod lending_pool {
                 global_params: default_global_params(),
                 pending_global_params: None,
                 netuid_total_collateral: Mapping::default(),
-                netuid_yield_index: Mapping::default(),
                 positions: Mapping::default(),
                 position_keys: StorageVec::new(),
                 debt_principal: Mapping::default(),
@@ -1981,12 +1978,8 @@ mod lending_pool {
                 return Err(Error::InsufficientCollateral);
             }
 
-            // Compute effective amount (with yield index)
-            let yield_index = self.netuid_yield_index.get(netuid).unwrap_or(Ratio::one());
-            let effective = yield_index
-                .checked_mul_value(amount.into())
-                .and_then(|v| Balance::try_from(v).ok())
-                .ok_or(Error::ArithmeticError)?;
+            // Effective amount equals the principal (no yield index).
+            let effective = amount;
 
             // Check stake availability
             let availability = self
@@ -2242,8 +2235,6 @@ mod lending_pool {
             // that actually exists.
             let alpha_params =
                 self.alpha_params.get(collateral_netuid).unwrap_or(default_alpha_params());
-            let yield_index =
-                self.netuid_yield_index.get(collateral_netuid).unwrap_or(Ratio::one());
             let bonus_multiplier = Ratio::from_inner(
                 Ratio::one()
                     .into_inner()
@@ -2253,20 +2244,15 @@ mod lending_pool {
             let clamped = TusdtLendingPool::clamp_liquidation_seizure(
                 collateral_price,
                 bonus_multiplier,
-                yield_index,
                 collateral_pos.alpha_principal,
                 alpha_to_seize,
                 alpha_principal_to_seize,
             )?;
             let (alpha_to_seize, alpha_principal_to_seize, _cover_value_tusdt, actual_debt_units) =
                 match clamped {
-                    // Unclamped path — the booked-collateral invariant holds by
-                    // construction: compute_liquidation_seizure derives
-                    // p2s = floor(a2s / yield_index), so
-                    // a2s >= floor(yield_index × p2s) always. The booked
-                    // collateral (yi × principal) therefore never drops by
-                    // more than the stake actually removed — excess can never
-                    // be inflated by a liquidation.
+                    // Unclamped path — principal and effective alpha are equal
+                    // (no yield index), so the seized principal never exceeds
+                    // the stake actually removed.
                     None => (
                         alpha_to_seize,
                         alpha_principal_to_seize,
@@ -2442,21 +2428,19 @@ mod lending_pool {
         // Permissionless fee claims
         // ─────────────────────────────────────────────────────────────
 
-        /// Unstakes the full excess alpha staking yield into the pool's free
-        /// native balance.
+        /// Unstakes the full excess alpha staking for a netuid and sends the
+        /// resulting native TAO to the treasury.
         ///
         /// Excess = actual available stake on the netuid minus booked
-        /// collateral (`netuid_yield_index × netuid_total_collateral` — every
-        /// position's effective collateral). The excess is unstaked via the
-        /// chain extension and lands in the pool's free TAO balance. No
-        /// transfer to the treasury happens here: the free balance joins the
-        /// pool's cash, and the obligations-aware treasury paths
-        /// (`claim_reserve`, `transfer_native_to_treasury`,
-        /// `claim_surplus_tusdt`) move it out. Permissionless: anyone may
-        /// trigger the unstake; a second call finds no excess until new yield
+        /// collateral (`netuid_total_collateral` — every position's
+        /// principal). The excess is unstaked via the chain extension and the
+        /// resulting TAO is transferred directly to the treasury. The excess
+        /// is unbooked value (owed to nobody), so the direct transfer cannot
+        /// short-change suppliers or the reserve. Permissionless: anyone may
+        /// trigger the claim; a second call finds no excess until new yield
         /// accrues.
         #[ink(message)]
-        pub fn claim_alpha_yield(&mut self, netuid: u16) -> Result<()> {
+        pub fn claim_alpha_excess(&mut self, netuid: u16) -> Result<()> {
             self.ensure_idle()?;
             self.ensure_approved_netuid(netuid).inspect_err(|_| {
                 self.set_idle();
@@ -2472,28 +2456,23 @@ mod lending_pool {
                     Error::ChainExtensionFailed
                 })?;
 
-            // Compute booked collateral (every position's effective collateral)
+            // Booked collateral is every position's principal (no yield index).
             let total_principal = self.netuid_total_collateral.get(netuid).unwrap_or_default();
-            let yield_index = self.netuid_yield_index.get(netuid).unwrap_or(Ratio::one());
-            let booked = yield_index
-                .checked_mul_value(total_principal.into())
-                .and_then(|v| Balance::try_from(v).ok())
-                .unwrap_or(0);
 
             // Excess = actual available − booked. With zero positions (e.g.
             // orphaned stake after a hotkey migration) the whole stake is
-            // excess and is recovered into the pool's free balance.
-            if availability.available <= booked {
+            // excess and is recovered for the treasury.
+            if availability.available <= total_principal {
                 self.set_idle();
                 return Ok(()); // no excess, no-op
             }
-            let excess =
-                availability.available.checked_sub(booked).ok_or(Error::ArithmeticError)?;
+            let excess = availability
+                .available
+                .checked_sub(total_principal)
+                .ok_or(Error::ArithmeticError)?;
 
             // Unstake the full excess to native TAO into the pool's free
-            // balance. No transfer to the treasury: the free balance is the
-            // pool's cash and is moved by the obligations-aware treasury
-            // paths (claim_reserve / transfer_native_to_treasury).
+            // balance, then forward it to the treasury.
             let balance_before = self.env().balance();
             self.env().extension().remove_stake(self.pool_hotkey, netuid, excess).map_err(
                 |_| {
@@ -2505,7 +2484,19 @@ mod lending_pool {
             let tao_received =
                 balance_after.checked_sub(balance_before).ok_or(Error::ArithmeticError)?;
 
-            self.env().emit_event(AlphaYieldClaimed { netuid, excess_alpha: excess, tao_received });
+            if tao_received > 0 {
+                self.env().transfer(self.treasury, tao_received).map_err(|_| {
+                    self.set_idle();
+                    Error::TransferFailed
+                })?;
+            }
+
+            self.env().emit_event(AlphaExcessClaimed {
+                netuid,
+                excess_alpha: excess,
+                tao_received,
+                recipient: self.treasury,
+            });
 
             self.set_idle();
             Ok(())
@@ -2939,10 +2930,10 @@ mod lending_pool {
         /// Migrates the pool's staking hotkey, moving all alpha stake to a new hotkey.
         ///
         /// Moves the full AVAILABLE stake per netuid — booked collateral
-        /// (yield-index-credited principal) plus any unclaimed excess — not
-        /// just principal. Moving principal alone would strand the
-        /// yield-credited portion under the old hotkey, where removals and
-        /// withdrawals (which target `pool_hotkey` only) can never reach it.
+        /// (all positions' principal) plus any unclaimed excess — not just
+        /// principal. Moving principal alone would strand the excess under
+        /// the old hotkey, where removals and withdrawals (which target
+        /// `pool_hotkey` only) can never reach it.
         #[ink(message)]
         pub fn update_pool_hotkey(
             &mut self,
@@ -3425,12 +3416,6 @@ mod lending_pool {
             Some(pos.alpha_principal)
         }
 
-        /// Returns the per-netuid yield index (1e18), or `None`.
-        #[ink(message)]
-        pub fn get_alpha_yield_index(&self, netuid: u16) -> Option<Ratio> {
-            Some(self.netuid_yield_index.get(netuid).unwrap_or(Ratio::one()))
-        }
-
         /// Returns the total alpha principal collateral booked for a netuid, or
         /// `None`.
         #[ink(message)]
@@ -3657,7 +3642,6 @@ mod lending_pool {
                 global_params: default_global_params(),
                 pending_global_params: None,
                 netuid_total_collateral: Mapping::default(),
-                netuid_yield_index: Mapping::default(),
                 positions: Mapping::default(),
                 position_keys: StorageVec::new(),
                 debt_principal: Mapping::default(),

@@ -44,9 +44,9 @@ impl TusdtLendingPool {
                 .ok_or(Error::ArithmeticError)
         }
 
-        /// Computes a user's effective alpha collateral for a netuid as
-        /// `alpha_principal * yield_index`. Errors: `Error::UnapprovedNetuid`,
-        /// `Error::ArithmeticError`.
+        /// Computes a user's effective alpha collateral for a netuid. With no
+        /// yield index the effective amount equals the principal. Errors:
+        /// `Error::UnapprovedNetuid`, `Error::ArithmeticError`.
         pub(crate) fn effective_alpha(&self, user: AccountId, netuid: u16) -> Result<Balance> {
             let market_id = self.netuid_to_market.get(netuid).ok_or(Error::UnapprovedNetuid)?;
             let pos = self.positions.get((market_id, user)).unwrap_or(Position {
@@ -54,14 +54,7 @@ impl TusdtLendingPool {
                 scaled_debt: 0,
                 alpha_principal: 0,
             });
-            if pos.alpha_principal == 0 {
-                return Ok(0);
-            }
-            let yield_index = self.netuid_yield_index.get(netuid).unwrap_or(Ratio::one());
-            yield_index
-                .checked_mul_value(pos.alpha_principal.into())
-                .and_then(|v| Balance::try_from(v).ok())
-                .ok_or(Error::ArithmeticError)
+            Ok(pos.alpha_principal)
         }
 
         pub(crate) fn max_liquidation_threshold_for_user(&self, user: AccountId) -> Result<Ratio> {
@@ -123,7 +116,7 @@ impl TusdtLendingPool {
         }
 
     /// Computes the alpha collateral to seize for covering `cover_value_tusdt` of
-    /// borrower debt, applying the liquidation bonus and the netuid yield index.
+    /// borrower debt, applying the liquidation bonus.
     /// Returns `(alpha_to_seize, alpha_principal_to_seize)`. Errors:
     /// `Error::ArithmeticError`.
     pub(crate) fn compute_liquidation_seizure(
@@ -152,13 +145,8 @@ impl TusdtLendingPool {
             .and_then(|v| Balance::try_from(v).ok())
             .ok_or(Error::ArithmeticError)?;
 
-        // Apply yield index to get principal
-        let yield_index =
-            self.netuid_yield_index.get(collateral_netuid).unwrap_or(Ratio::one());
-        let alpha_principal_to_seize = yield_index
-            .checked_div_value(alpha_to_seize.into())
-            .and_then(|v| Balance::try_from(v).ok())
-            .ok_or(Error::ArithmeticError)?;
+        // Without a yield index the principal equals the effective alpha seized.
+        let alpha_principal_to_seize = alpha_to_seize;
         Ok((alpha_to_seize, alpha_principal_to_seize))
     }
 
@@ -182,7 +170,6 @@ impl TusdtLendingPool {
     pub(crate) fn clamp_liquidation_seizure(
         collateral_price: Ratio,
         bonus_multiplier: Ratio,
-        yield_index: Ratio,
         available_principal: Balance,
         _alpha_to_seize: Balance,
         alpha_principal_to_seize: Balance,
@@ -193,10 +180,8 @@ impl TusdtLendingPool {
         // Principal is the binding constraint: seize the full remaining
         // position and re-derive the effective alpha actually transferred.
         let principal = available_principal;
-        let effective = yield_index
-            .checked_mul_value(principal.into())
-            .and_then(|v| Balance::try_from(v).ok())
-            .ok_or(Error::ArithmeticError)?;
+        // Effective alpha equals the principal (no yield index).
+        let effective = principal;
         // The seized collateral's TUSDT value at the current price.
         let collateral_value = collateral_price
             .checked_mul_value(effective.into())

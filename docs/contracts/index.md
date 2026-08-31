@@ -97,8 +97,8 @@ flowchart TB
 
 1. Supply TAO or TUSDT to the pool — you receive **lTAO/lTUSDT receipt tokens** whose
    exchange rate grows as interest accrues.
-2. Deposit alpha as collateral — it keeps earning staking yield, and most of that yield
-   (75%) boosts your borrowing power too.
+2. Deposit alpha as collateral — it keeps earning staking yield on its subnet; excess
+   yield above booked collateral is claimed to the treasury.
 3. Borrow TAO or TUSDT up to `collateral USD × collateral factor (50%)` minus existing
    debt, as long as your global **health factor stays ≥ 1.0**.
 4. Interest is charged hourly at a utilization-based rate; repay any time, and repayments

@@ -43,7 +43,6 @@ fn set_timelock_to_zero(pool: &mut TusdtLendingPool) {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 1_800_000,
         close_factor: 5000,
-        performance_fee: 2500,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
         full_close_hf_threshold: 9500,
@@ -435,7 +434,6 @@ fn valid_global_params_accepted() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 1_800_000,
         close_factor: 5000,
-        performance_fee: 2500,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
         full_close_hf_threshold: 9500,
@@ -451,7 +449,6 @@ fn global_params_rejects_zero_oracle_age() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 0,
         close_factor: 5000,
-        performance_fee: 2500,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
         full_close_hf_threshold: 9500,
@@ -469,7 +466,6 @@ fn global_params_rejects_zero_close_factor() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 1_800_000,
         close_factor: 0,
-        performance_fee: 2500,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
         full_close_hf_threshold: 9500,
@@ -487,7 +483,6 @@ fn global_params_rejects_high_close_factor() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 1_800_000,
         close_factor: 6000, // > 50%
-        performance_fee: 2500,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
         full_close_hf_threshold: 9500,
@@ -618,7 +613,6 @@ fn schedule_and_execute_global_params() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 3_600_000,
         close_factor: 4000,
-        performance_fee: 2000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
         full_close_hf_threshold: 9500,
@@ -652,7 +646,6 @@ fn execute_global_params_before_24h_still_timelocked() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 3_600_000,
         close_factor: 4000,
-        performance_fee: 2000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
         full_close_hf_threshold: 9500,
@@ -676,7 +669,6 @@ fn cancel_global_params_update() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 3_600_000,
         close_factor: 4000,
-        performance_fee: 2000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
         full_close_hf_threshold: 9500,
@@ -1017,39 +1009,34 @@ fn debt_details_never_reports_negative_interest() {
 }
 
 // ---------------------------------------------------------------------------
-// Alpha yield index
+// Alpha excess claim (full unstake → treasury)
 // ---------------------------------------------------------------------------
 
 #[ink::test]
-fn yield_index_defaults_to_one() {
-    let (pool, _accounts) = setup();
-    let idx = pool.get_alpha_yield_index(1).unwrap();
-    assert_eq!(idx, Ratio::one());
-}
-
-#[ink::test]
-fn claim_alpha_yield_unstakes_full_excess_to_free_balance() {
+fn claim_alpha_excess_unstakes_full_excess() {
     let (mut pool, accounts) = setup_with_alpha(1);
     set_caller(accounts.alice);
     register_mock(1_000);
     pool.deposit_alpha(1, 500).unwrap();
 
-    // Mock reports 1_000 available; booked = 1.0 × 500 = 500 → excess 500.
+    // Mock reports 1_000 available; booked = 500 principal → excess 500.
     set_caller(accounts.charlie); // permissionless
-    pool.claim_alpha_yield(1).unwrap();
+    pool.claim_alpha_excess(1).unwrap();
 
-    // The FULL excess (500) was unstaked (func 2) from the pool hotkey into
-    // the pool's free balance — no fee split, no index credit.
+    // The FULL excess (500) was unstaked (func 2) from the pool hotkey. The
+    // off-chain mock does not move balances, so `tao_received` is 0 here and
+    // the treasury transfer branch is skipped; the transfer itself is covered
+    // by the e2e suite (the message forwards the unstaked TAO to the
+    // treasury).
     let record = last_ext_call().unwrap();
     assert_eq!(record.func_id, 2);
     assert_eq!(record.hotkey, accounts.bob); // pool_hotkey
     assert_eq!(record.netuid, 1);
     assert_eq!(record.amount, 500);
-    assert_eq!(pool.get_alpha_yield_index(1).unwrap(), Ratio::one());
 }
 
 #[ink::test]
-fn claim_alpha_yield_noop_when_no_excess() {
+fn claim_alpha_excess_noop_when_no_excess() {
     let (mut pool, accounts) = setup_with_alpha(1);
     set_caller(accounts.alice);
     register_mock(500);
@@ -1057,28 +1044,27 @@ fn claim_alpha_yield_noop_when_no_excess() {
 
     // Mock reports exactly the booked amount — no excess, no unstake.
     set_caller(accounts.charlie);
-    pool.claim_alpha_yield(1).unwrap();
+    pool.claim_alpha_excess(1).unwrap();
     assert!(last_ext_call().is_none()); // no remove_stake was issued
-    assert_eq!(pool.get_alpha_yield_index(1).unwrap(), Ratio::one());
 }
 
 #[ink::test]
-fn claim_alpha_yield_recovers_orphan_stake_when_no_positions() {
+fn claim_alpha_excess_recovers_orphan_stake_when_no_positions() {
     let (mut pool, _accounts) = setup_with_alpha(1);
     // Mock reports stake but no positions exist (e.g. stranded by a hotkey
-    // migration): the whole stake is excess and is recovered to free balance.
+    // migration): the whole stake is excess and is recovered for the treasury.
     register_mock(1_000);
-    pool.claim_alpha_yield(1).unwrap();
+    pool.claim_alpha_excess(1).unwrap();
     let record = last_ext_call().unwrap();
     assert_eq!(record.func_id, 2);
     assert_eq!(record.amount, 1_000);
 }
 
 #[ink::test]
-fn claim_alpha_yield_rejects_unapproved_netuid() {
+fn claim_alpha_excess_rejects_unapproved_netuid() {
     let (mut pool, _accounts) = setup();
     register_mock(1_000);
-    assert_eq!(pool.claim_alpha_yield(99), Err(Error::UnapprovedNetuid));
+    assert_eq!(pool.claim_alpha_excess(99), Err(Error::UnapprovedNetuid));
 }
 
 #[ink::test]
@@ -1497,7 +1483,6 @@ fn get_global_params_returns_defaults() {
     let (pool, _accounts) = setup();
     let params = pool.get_global_params();
     assert_eq!(params.close_factor, 5000);
-    assert_eq!(params.performance_fee, 2500);
     assert_eq!(params.max_oracle_age_ms, 1_800_000);
     assert_eq!(params.supply_cap_tao, 0);
     assert_eq!(params.supply_cap_tusdt, 0);
@@ -2425,10 +2410,10 @@ fn health_factor_is_zero_without_collateral() {
 /// `docs/calculations/lending-pool.md` §6: covering 172.5 TUSDT of debt at an
 /// alpha price of 0.57 TUSDT/α with the default 5% bonus seizes
 /// floor(172.5 × 1.05) = 181.125 TUSDT of collateral =
-/// floor(181.125 / 0.57) = 317.763158 α. With a yield index of 1.0 the
-/// principal seized equals the effective alpha seized.
+/// floor(181.125 / 0.57) = 317.763158 α. Without a yield index the principal
+/// seized equals the effective alpha seized.
 #[ink::test]
-fn liquidation_seizure_applies_bonus_and_yield_index() {
+fn liquidation_seizure_applies_bonus() {
     let (pool, _accounts) = setup_with_alpha(1);
 
     // 0.57 TUSDT per alpha.
@@ -2602,7 +2587,6 @@ fn clamp_liquidation_seizure_returns_none_when_cover_fits() {
     let clamped = TusdtLendingPool::clamp_liquidation_seizure(
         Ratio::one(),
         bonus,
-        Ratio::one(),
         10_000_000_000, // available principal
         3_000_000_000,  // effective alpha requested
         3_000_000_000,  // principal requested
@@ -2621,7 +2605,6 @@ fn clamp_liquidation_seizure_back_computes_cover_from_available_collateral() {
     let clamped = TusdtLendingPool::clamp_liquidation_seizure(
         Ratio::one(),      // 1 TUSDT per alpha
         bonus,
-        Ratio::one(),      // yield index 1.0
         1_000_000_000,     // available: 1 alpha
         2_000_000_000,     // requested effective alpha (2 alpha — exceeds)
         2_000_000_000,     // requested principal
@@ -2632,7 +2615,7 @@ fn clamp_liquidation_seizure_back_computes_cover_from_available_collateral() {
     let (alpha_to_seize, alpha_principal_to_seize, cover_value_tusdt) = clamped;
     // Principal is the binding constraint: the full position is seized.
     assert_eq!(alpha_principal_to_seize, 1_000_000_000);
-    assert_eq!(alpha_to_seize, 1_000_000_000); // yield 1.0 → effective == principal
+    assert_eq!(alpha_to_seize, 1_000_000_000); // effective == principal
     // cover = ceil(collateral_value / (1 + bonus)) = ceil(1 TUSDT / 1.05).
     assert_eq!(cover_value_tusdt, 952_380_953);
     // The ceiling is the smallest cover that repays the collateral's full value
@@ -2641,14 +2624,13 @@ fn clamp_liquidation_seizure_back_computes_cover_from_available_collateral() {
     assert!(bonus.checked_mul_value((cover_value_tusdt - 1).into()).unwrap() < 1_000_000_000);
 }
 
-/// The yield index scales the effective alpha transferred for a given principal.
+/// Without a yield index the effective alpha transferred equals the principal.
 #[ink::test]
-fn clamp_liquidation_seizure_applies_yield_index_to_principal() {
+fn clamp_liquidation_seizure_effective_equals_principal() {
     let bonus = Ratio::from_inner(1_050_000_000_000_000_000);
     let clamped = TusdtLendingPool::clamp_liquidation_seizure(
         Ratio::one(),
         bonus,
-        Ratio::from_inner(2_000_000_000_000_000_000), // yield index 2.0
         1_000_000_000,                                // 1 alpha principal
         5_000_000_000,
         5_000_000_000,
@@ -2657,11 +2639,11 @@ fn clamp_liquidation_seizure_applies_yield_index_to_principal() {
     .expect("seizure must clamp");
 
     let (alpha_to_seize, alpha_principal_to_seize, cover_value_tusdt) = clamped;
-    // 1 principal × 2.0 yield = 2 effective alpha transferred.
+    // 1 principal → 1 effective alpha transferred.
     assert_eq!(alpha_principal_to_seize, 1_000_000_000);
-    assert_eq!(alpha_to_seize, 2_000_000_000);
-    // cover = ceil(2 TUSDT / 1.05).
-    assert_eq!(cover_value_tusdt, 1_904_761_905);
+    assert_eq!(alpha_to_seize, 1_000_000_000);
+    // cover = ceil(1 TUSDT / 1.05).
+    assert_eq!(cover_value_tusdt, 952_380_953);
 }
 
 /// The full-close threshold is a valid-but-bounded global parameter.
@@ -2670,7 +2652,6 @@ fn global_params_rejects_invalid_full_close_threshold() {
     let base = PoolGlobalParamsConfig {
         max_oracle_age_ms: 1_800_000,
         close_factor: 5000,
-        performance_fee: 2500,
         full_close_hf_threshold: 9500,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,

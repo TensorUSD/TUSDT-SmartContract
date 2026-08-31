@@ -202,7 +202,7 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Group:** Alpha collateral
 
-**Returned by:** `claim_alpha_yield` (message), `liquidate` (message), `sweep` (message), `update_pool_hotkey` (message), `withdraw_alpha` (message), `collateral_price` (helper), `get_oracle_price` (helper), `sweep_to_root` (helper)
+**Returned by:** `claim_alpha_excess` (message), `liquidate` (message), `sweep` (message), `update_pool_hotkey` (message), `withdraw_alpha` (message), `collateral_price` (helper), `get_oracle_price` (helper), `sweep_to_root` (helper)
 
 **Client guidance:** Node-level failure: retry (may be transient); report if persistent.
 
@@ -422,7 +422,7 @@ the clamped seizure).
 
 **Group:** Cross-contract
 
-**Returned by:** `borrow_tao` (message), `claim_alpha_yield` (message), `claim_reserve` (message), `claim_surplus_tusdt` (message), `liquidate` (message), `repay_tao` (message), `supply_tao` (message), `transfer_native_to_treasury` (message), `withdraw_tao` (message)
+**Returned by:** `borrow_tao` (message), `claim_alpha_excess` (message), `claim_reserve` (message), `claim_surplus_tusdt` (message), `liquidate` (message), `repay_tao` (message), `supply_tao` (message), `transfer_native_to_treasury` (message), `withdraw_tao` (message)
 
 **Client guidance:** A native TAO transfer failed: check the balance and retry.
 
@@ -452,6 +452,6 @@ the clamped seizure).
 
 **Group:** General
 
-**Returned by:** `borrow_tao` (message), `borrow_tusdt` (message), `cancel_alpha_params_update` (message), `cancel_market_params_update` (message), `claim_alpha_yield` (message), `claim_reserve` (message), `deposit_alpha` (message), `get_available_borrow_tusdt` (message), `get_collateral_value_tusdt` (message), `get_debt_value_tusdt` (message), `get_health_factor` (message), `is_liquidatable` (message), `liquidate` (message), `repay_tao` (message), `repay_tusdt` (message), `set_alpha_params` (message), `set_approved_netuid` (message), `set_global_params` (message), `set_market_params` (message), `supply_tao` (message), `supply_tusdt` (message), `transfer_native_to_treasury` (message), `withdraw_alpha` (message), `withdraw_tao` (message), `withdraw_tusdt` (message), `accrue_interest` (helper), `alpha_price_rao_to_ratio` (helper), `collateral_price` (helper), `div_ratio` (helper), `effective_alpha` (helper), `ensure_approved_netuid` (helper), `get_oracle_price` (helper), `interest_params_from_config` (helper), `market_cash` (helper), `max_liquidation_threshold_for_user` (helper), `min_collateral_factor_for_user` (helper), `validate_interest_params` (helper)
+**Returned by:** `borrow_tao` (message), `borrow_tusdt` (message), `cancel_alpha_params_update` (message), `cancel_market_params_update` (message), `claim_alpha_excess` (message), `claim_reserve` (message), `deposit_alpha` (message), `get_available_borrow_tusdt` (message), `get_collateral_value_tusdt` (message), `get_debt_value_tusdt` (message), `get_health_factor` (message), `is_liquidatable` (message), `liquidate` (message), `repay_tao` (message), `repay_tusdt` (message), `set_alpha_params` (message), `set_approved_netuid` (message), `set_global_params` (message), `set_market_params` (message), `supply_tao` (message), `supply_tusdt` (message), `transfer_native_to_treasury` (message), `withdraw_alpha` (message), `withdraw_tao` (message), `withdraw_tusdt` (message), `accrue_interest` (helper), `alpha_price_rao_to_ratio` (helper), `collateral_price` (helper), `div_ratio` (helper), `effective_alpha` (helper), `ensure_approved_netuid` (helper), `get_oracle_price` (helper), `interest_params_from_config` (helper), `market_cash` (helper), `max_liquidation_threshold_for_user` (helper), `min_collateral_factor_for_user` (helper), `validate_interest_params` (helper)
 
 **Client guidance:** Unexpected numeric error: report as a contract bug.

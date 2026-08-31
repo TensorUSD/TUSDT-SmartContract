@@ -213,7 +213,7 @@ the difference is hourly compounding and flooring.
 
 ## 5. Health factor and how much you can borrow
 
-Collateral is alpha, valued at `effective_alpha = floor(principal × yield_index)` ×
+Collateral is alpha, valued at `effective_alpha = principal` (no yield index) ×
 `collateral_price = oracle × α_price_rao / 1e9`, summed over all your alpha netuids.
 Debt is valued in TUSDT: TUSDT debt + `floor(TAO debt × oracle)`.
 
@@ -228,7 +228,7 @@ markets** — never per-market. HF is a Ratio; **liquidatable ⇔ HF < 1.0 stric
 Borrow reverts `BorrowHealthExceeded` when `borrow value > available`;
 `LiquidityInsufficient` when the market lacks cash; caps (if set) → `BorrowCapExceeded`.
 
-**Worked example.** Alice deposits 1,000 α (α-price 3,000,000 rao = 0.003 TAO/α, oracle 230, yield index 1.0):
+**Worked example.** Alice deposits 1,000 α (α-price 3,000,000 rao = 0.003 TAO/α, oracle 230):
 
 ```text
 collateral_value = 230 × 0.003 × 1,000 = 690 TUSDT
@@ -310,7 +310,7 @@ exceed the borrower's collateral, the available principal binds and the covered 
 is back-computed (`clamp_liquidation_seizure`, risk.rs):
 
 ```text
-requested 2 α principal, available 1 α (price 1 TUSDT/α, bonus 5%, yield 1.0):
+requested 2 α principal, available 1 α (price 1 TUSDT/α, bonus 5%):
 principal_seized = 1 α;  alpha_seized = 1 α
 cover_value = ceil(1 TUSDT / 1.05) = 952_380_953 rao   # pinned in tests
 (cover − 1) × 1.05 < 1 ≤ cover × 1.05 — the ceiling is the smallest cover
