@@ -12,10 +12,10 @@ this workspace. One page per contract:
 | Treasury | `tusdt-treasury` | `tusdt_treasury` | 4 | 0 | [treasury.md](treasury.md) |
 | Governance | `tusdt-governance` | `tusdt_governance` | 27 | 2 | [governance.md](governance.md) |
 | Election | `tusdt-election` | `tusdt_election` | 22 | 1 | [election.md](election.md) |
-| Lending Pool | `tusdt-lending-pool` | `tusdt_lending_pool` | 43 | 7 | [lending-pool.md](lending-pool.md) |
+| Lending Pool | `tusdt-lending-pool` | `tusdt_lending_pool` | 43 | 8 | [lending-pool.md](lending-pool.md) |
 
 ¹ *Reserved* = declared in the enum but not returned by any current message
-(14 total). If one of these is observed against a live deployment, the
+(15 total). If one of these is observed against a live deployment, the
 deployed code is newer/different than this source — verify behavior against
 the chain, not the local ABI.
 

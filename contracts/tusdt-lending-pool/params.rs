@@ -35,7 +35,10 @@ use super::*;
     pub struct AlphaMarketParams {
         pub collateral_factor: Ratio,
         pub liquidation_threshold: Ratio,
-        pub liquidation_bonus: Ratio,
+        /// Liquidation fee: the share of the seized alpha collateral taken by
+        /// the platform, capped at the surplus share so the liquidator never
+        /// loses principal.
+        pub liquidation_fee: Ratio,
         pub supply_cap: Balance,
     }
 
@@ -46,7 +49,7 @@ use super::*;
     pub struct AlphaMarketParamsConfig {
         pub collateral_factor: u32,
         pub liquidation_threshold: u32,
-        pub liquidation_bonus: u32,
+        pub liquidation_fee: u32,
         pub supply_cap: Balance,
     }
 
@@ -56,12 +59,6 @@ use super::*;
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub struct PoolGlobalParams {
         pub max_oracle_age_ms: u64,
-        pub close_factor: Ratio,
-        pub performance_fee: Ratio,
-        /// Health-factor threshold below which a liquidation may cover up to
-        /// 100% of the borrower's debt (Aave V3.1-style full-close escape
-        /// hatch). Above it the `close_factor` cap applies. Default 95% (0.95).
-        pub full_close_hf_threshold: Ratio,
         pub supply_cap_tao: Balance,
         pub supply_cap_tusdt: Balance,
         pub borrow_cap_tao: Balance,
@@ -74,10 +71,6 @@ use super::*;
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
     pub struct PoolGlobalParamsConfig {
         pub max_oracle_age_ms: u64,
-        pub close_factor: u32,
-        pub performance_fee: u32,
-        /// Full-close health threshold in basis points (9500 = 0.95).
-        pub full_close_hf_threshold: u32,
         pub supply_cap_tao: Balance,
         pub supply_cap_tusdt: Balance,
         pub borrow_cap_tao: Balance,
@@ -134,7 +127,7 @@ use super::*;
             AlphaMarketParamsConfig {
                 collateral_factor: self.collateral_factor.to_basis_points().unwrap_or(0),
                 liquidation_threshold: self.liquidation_threshold.to_basis_points().unwrap_or(0),
-                liquidation_bonus: self.liquidation_bonus.to_basis_points().unwrap_or(0),
+                liquidation_fee: self.liquidation_fee.to_basis_points().unwrap_or(0),
                 supply_cap: self.supply_cap,
             }
         }
@@ -146,9 +139,6 @@ use super::*;
         pub fn to_config(&self) -> PoolGlobalParamsConfig {
             PoolGlobalParamsConfig {
                 max_oracle_age_ms: self.max_oracle_age_ms,
-                close_factor: self.close_factor.to_basis_points().unwrap_or(0),
-                performance_fee: self.performance_fee.to_basis_points().unwrap_or(0),
-                full_close_hf_threshold: self.full_close_hf_threshold.to_basis_points().unwrap_or(0),
                 supply_cap_tao: self.supply_cap_tao,
                 supply_cap_tusdt: self.supply_cap_tusdt,
                 borrow_cap_tao: self.borrow_cap_tao,
@@ -182,12 +172,12 @@ use super::*;
     }
 
     /// Default alpha market parameters.
-    /// collateral_factor=50%, liquidation_threshold=60%, liquidation_bonus=5%, supply_cap=unlimited
+    /// collateral_factor=50%, liquidation_threshold=60%, liquidation_fee=5%, supply_cap=unlimited
     pub(crate) fn default_alpha_params() -> AlphaMarketParams {
         AlphaMarketParams {
             collateral_factor: Ratio::from_basis_points(5000),
             liquidation_threshold: Ratio::from_basis_points(6000),
-            liquidation_bonus: Ratio::from_basis_points(500),
+            liquidation_fee: Ratio::from_basis_points(500),
             supply_cap: 0, // unlimited
         }
     }
@@ -195,10 +185,7 @@ use super::*;
     /// Default global parameters.
     pub(crate) fn default_global_params() -> PoolGlobalParams {
         PoolGlobalParams {
-            max_oracle_age_ms: 1_800_000,                    // 30 min
-            close_factor: Ratio::from_basis_points(5000),    // 50%
-            performance_fee: Ratio::from_basis_points(2500), // 25%
-            full_close_hf_threshold: Ratio::from_basis_points(9500), // 95%
+            max_oracle_age_ms: 1_800_000, // 30 min
             supply_cap_tao: 0,
             supply_cap_tusdt: 0,
             borrow_cap_tao: 0,
@@ -265,8 +252,10 @@ impl TusdtLendingPool {
         }
 
         /// Validates a basis-points alpha market config (collateral factor <
-        /// liquidation threshold <= 10_000, bonus <= 2_500) and converts it to
-        /// internal Ratio-based params. Errors: `Error::InvalidParam`.
+        /// liquidation threshold <= 10_000, liquidation fee <= 10_000 and
+        /// fee + threshold <= 10_000 so the platform's full cut always fits
+        /// within the liquidation surplus) and converts it to internal
+        /// Ratio-based params. Errors: `Error::InvalidParam`.
         pub(crate) fn alpha_params_from_config(
             config: AlphaMarketParamsConfig,
         ) -> Result<AlphaMarketParams> {
@@ -276,20 +265,30 @@ impl TusdtLendingPool {
             if config.liquidation_threshold > 10_000 {
                 return Err(Error::InvalidParam);
             }
-            if config.liquidation_bonus > 2_500 {
+            if config.liquidation_fee > 10_000 {
+                return Err(Error::InvalidParam);
+            }
+            // Sane bound X < 1 − LT: with the fee below the liquidation room
+            // the platform receives its FULL cut (uncapped) on every
+            // liquidatable position and the liquidator still profits.
+            let fee_room = config
+                .liquidation_fee
+                .checked_add(config.liquidation_threshold)
+                .ok_or(Error::ArithmeticError)?;
+            if fee_room > 10_000 {
                 return Err(Error::InvalidParam);
             }
             Ok(AlphaMarketParams {
                 collateral_factor: Ratio::from_basis_points(config.collateral_factor),
                 liquidation_threshold: Ratio::from_basis_points(config.liquidation_threshold),
-                liquidation_bonus: Ratio::from_basis_points(config.liquidation_bonus),
+                liquidation_fee: Ratio::from_basis_points(config.liquidation_fee),
                 supply_cap: config.supply_cap,
             })
         }
 
         /// Validates internal Ratio-based alpha params: collateral factor > 0 and
-        /// < liquidation threshold <= 100%, bonus <= 25%. Errors:
-        /// `Error::InvalidRatio`.
+        /// < liquidation threshold <= 100%, fee <= 100% with
+        /// fee + threshold <= 100%. Errors: `Error::InvalidRatio`.
         pub(crate) fn validate_alpha_params(params: &AlphaMarketParams) -> Result<()> {
             if params.collateral_factor.is_zero()
                 || params.collateral_factor.into_inner()
@@ -300,37 +299,30 @@ impl TusdtLendingPool {
             if params.liquidation_threshold.into_inner() > Ratio::one().into_inner() {
                 return Err(Error::InvalidRatio);
             }
-            if params.liquidation_bonus.into_inner() > Ratio::from_basis_points(2_500).into_inner()
-            {
+            if params.liquidation_fee.into_inner() > Ratio::one().into_inner() {
+                return Err(Error::InvalidRatio);
+            }
+            let fee_room = params
+                .liquidation_fee
+                .into_inner()
+                .checked_add(params.liquidation_threshold.into_inner())
+                .ok_or(Error::ArithmeticError)?;
+            if fee_room > Ratio::one().into_inner() {
                 return Err(Error::InvalidRatio);
             }
             Ok(())
         }
 
-        /// Validates a global params config (oracle age > 0, close factor in
-        /// (0, 5_000], performance fee <= 5_000, full-close health threshold in
-        /// (0, 10_000]) and converts it to internal Ratio-based params. Errors:
-        /// `Error::InvalidParam`.
+        /// Validates a global params config (oracle age > 0) and converts it
+        /// to internal Ratio-based params. Errors: `Error::InvalidParam`.
         pub(crate) fn global_params_from_config(
             config: PoolGlobalParamsConfig,
         ) -> Result<PoolGlobalParams> {
             if config.max_oracle_age_ms == 0 {
                 return Err(Error::InvalidParam);
             }
-            if config.close_factor == 0 || config.close_factor > 5_000 {
-                return Err(Error::InvalidParam);
-            }
-            if config.performance_fee > 5_000 {
-                return Err(Error::InvalidParam);
-            }
-            if config.full_close_hf_threshold == 0 || config.full_close_hf_threshold > 10_000 {
-                return Err(Error::InvalidParam);
-            }
             Ok(PoolGlobalParams {
                 max_oracle_age_ms: config.max_oracle_age_ms,
-                close_factor: Ratio::from_basis_points(config.close_factor),
-                performance_fee: Ratio::from_basis_points(config.performance_fee),
-                full_close_hf_threshold: Ratio::from_basis_points(config.full_close_hf_threshold),
                 supply_cap_tao: config.supply_cap_tao,
                 supply_cap_tusdt: config.supply_cap_tusdt,
                 borrow_cap_tao: config.borrow_cap_tao,
@@ -342,20 +334,6 @@ impl TusdtLendingPool {
         /// `global_params_from_config`. Errors: `Error::InvalidRatio`.
         pub(crate) fn validate_global_params(params: &PoolGlobalParams) -> Result<()> {
             if params.max_oracle_age_ms == 0 {
-                return Err(Error::InvalidRatio);
-            }
-            if params.close_factor.is_zero()
-                || params.close_factor.into_inner() > Ratio::from_basis_points(5_000).into_inner()
-            {
-                return Err(Error::InvalidRatio);
-            }
-            if params.performance_fee.into_inner() > Ratio::from_basis_points(5_000).into_inner() {
-                return Err(Error::InvalidRatio);
-            }
-            if params.full_close_hf_threshold.is_zero()
-                || params.full_close_hf_threshold.into_inner()
-                    > Ratio::from_basis_points(10_000).into_inner()
-            {
                 return Err(Error::InvalidRatio);
             }
             Ok(())

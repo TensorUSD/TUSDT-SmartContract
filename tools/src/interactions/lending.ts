@@ -120,7 +120,7 @@ export async function setAlphaParams(
   config: {
     collateralFactor: number;
     liquidationThreshold: number;
-    liquidationBonus: number;
+    liquidationFee: number;
     supplyCap: number;
   },
 ) {
@@ -129,7 +129,7 @@ export async function setAlphaParams(
     {
       collateral_factor: config.collateralFactor,
       liquidation_threshold: config.liquidationThreshold,
-      liquidation_bonus: config.liquidationBonus,
+      liquidation_fee: config.liquidationFee,
       supply_cap: config.supplyCap,
     },
   ]);
@@ -186,19 +186,9 @@ export async function liquidate(
   pool: ContractPromise,
   signer: KeyringPair,
   borrower: string,
-  debtMarket: number,
-  debtToCover: bigint,
-  collateralNetuid: number,
   value: bigint = 0n,
 ) {
-  return txMessage(
-    api,
-    pool,
-    "liquidate",
-    signer,
-    [borrower, debtMarket, debtToCover, collateralNetuid],
-    value,
-  );
+  return txMessage(api, pool, "liquidate", signer, [borrower], value);
 }
 
 export async function coverDeficit(
