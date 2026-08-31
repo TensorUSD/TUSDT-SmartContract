@@ -42,10 +42,8 @@ fn setup_with_alpha(netuid: u16) -> (
 fn set_timelock_to_zero(pool: &mut TusdtLendingPool) {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 1_800_000,
-        close_factor: 5000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
-        full_close_hf_threshold: 9500,
         borrow_cap_tao: 0,
         borrow_cap_tusdt: 0,
     };
@@ -393,7 +391,7 @@ fn valid_alpha_params_accepted() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 5000,
         liquidation_threshold: 6000,
-        liquidation_bonus: 500,
+        liquidation_fee: 500,
         supply_cap: 0,
     };
     let params = TusdtLendingPool::alpha_params_from_config(config).unwrap();
@@ -406,7 +404,7 @@ fn alpha_params_rejects_cf_ge_lt() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 6000,
         liquidation_threshold: 5000, // CF > LT — invalid
-        liquidation_bonus: 500,
+        liquidation_fee: 500,
         supply_cap: 0,
     };
     assert_eq!(
@@ -416,11 +414,26 @@ fn alpha_params_rejects_cf_ge_lt() {
 }
 
 #[ink::test]
-fn alpha_params_rejects_high_bonus() {
+fn alpha_params_rejects_high_fee_above_liquidation_room() {
+    // The fee must leave liquidation room (fee + threshold <= 10_000) so the
+    // platform's full cut always fits within the surplus of a liquidatable
+    // position. With LT 60% the room is 40%; 45% exceeds it.
     let config = AlphaMarketParamsConfig {
         collateral_factor: 5000,
         liquidation_threshold: 6000,
-        liquidation_bonus: 3000, // > 25%
+        liquidation_fee: 4500, // 45% + 60% LT > 100%
+        supply_cap: 0,
+    };
+    assert_eq!(
+        TusdtLendingPool::alpha_params_from_config(config),
+        Err(Error::InvalidParam)
+    );
+
+    // A fee above 100% is always invalid.
+    let config = AlphaMarketParamsConfig {
+        collateral_factor: 5000,
+        liquidation_threshold: 6000,
+        liquidation_fee: 10_001,
         supply_cap: 0,
     };
     assert_eq!(
@@ -433,59 +446,21 @@ fn alpha_params_rejects_high_bonus() {
 fn valid_global_params_accepted() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 1_800_000,
-        close_factor: 5000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
-        full_close_hf_threshold: 9500,
         borrow_cap_tao: 0,
         borrow_cap_tusdt: 0,
     };
     let params = TusdtLendingPool::global_params_from_config(config).unwrap();
-    assert_eq!(params.close_factor, Ratio::from_basis_points(5000));
+    assert_eq!(params.max_oracle_age_ms, 1_800_000);
 }
 
 #[ink::test]
 fn global_params_rejects_zero_oracle_age() {
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 0,
-        close_factor: 5000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
-        full_close_hf_threshold: 9500,
-        borrow_cap_tao: 0,
-        borrow_cap_tusdt: 0,
-    };
-    assert_eq!(
-        TusdtLendingPool::global_params_from_config(config),
-        Err(Error::InvalidParam)
-    );
-}
-
-#[ink::test]
-fn global_params_rejects_zero_close_factor() {
-    let config = PoolGlobalParamsConfig {
-        max_oracle_age_ms: 1_800_000,
-        close_factor: 0,
-        supply_cap_tao: 0,
-        supply_cap_tusdt: 0,
-        full_close_hf_threshold: 9500,
-        borrow_cap_tao: 0,
-        borrow_cap_tusdt: 0,
-    };
-    assert_eq!(
-        TusdtLendingPool::global_params_from_config(config),
-        Err(Error::InvalidParam)
-    );
-}
-
-#[ink::test]
-fn global_params_rejects_high_close_factor() {
-    let config = PoolGlobalParamsConfig {
-        max_oracle_age_ms: 1_800_000,
-        close_factor: 6000, // > 50%
-        supply_cap_tao: 0,
-        supply_cap_tusdt: 0,
-        full_close_hf_threshold: 9500,
         borrow_cap_tao: 0,
         borrow_cap_tusdt: 0,
     };
@@ -612,10 +587,8 @@ fn schedule_and_execute_global_params() {
     set_caller(accounts.alice);
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 3_600_000,
-        close_factor: 4000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
-        full_close_hf_threshold: 9500,
         borrow_cap_tao: 0,
         borrow_cap_tusdt: 0,
     };
@@ -645,10 +618,8 @@ fn execute_global_params_before_24h_still_timelocked() {
     set_caller(accounts.alice);
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 3_600_000,
-        close_factor: 4000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
-        full_close_hf_threshold: 9500,
         borrow_cap_tao: 0,
         borrow_cap_tusdt: 0,
     };
@@ -668,10 +639,8 @@ fn cancel_global_params_update() {
     set_caller(accounts.alice);
     let config = PoolGlobalParamsConfig {
         max_oracle_age_ms: 3_600_000,
-        close_factor: 4000,
         supply_cap_tao: 0,
         supply_cap_tusdt: 0,
-        full_close_hf_threshold: 9500,
         borrow_cap_tao: 0,
         borrow_cap_tusdt: 0,
     };
@@ -691,7 +660,7 @@ fn schedule_and_execute_alpha_params() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 6000,
         liquidation_threshold: 7000,
-        liquidation_bonus: 800,
+        liquidation_fee: 800,
         supply_cap: 1_000_000,
     };
     pool.set_alpha_params(1, config).unwrap();
@@ -713,7 +682,7 @@ fn cancel_alpha_params_update() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 6000,
         liquidation_threshold: 7000,
-        liquidation_bonus: 800,
+        liquidation_fee: 800,
         supply_cap: 1_000_000,
     };
     pool.set_alpha_params(1, config).unwrap();
@@ -1482,7 +1451,6 @@ fn borrow_only_orphan_self_heal() {
 fn get_global_params_returns_defaults() {
     let (pool, _accounts) = setup();
     let params = pool.get_global_params();
-    assert_eq!(params.close_factor, 5000);
     assert_eq!(params.max_oracle_age_ms, 1_800_000);
     assert_eq!(params.supply_cap_tao, 0);
     assert_eq!(params.supply_cap_tusdt, 0);
@@ -1512,7 +1480,7 @@ fn get_alpha_params_returns_configured_params() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 6000,
         liquidation_threshold: 7000,
-        liquidation_bonus: 800,
+        liquidation_fee: 800,
         supply_cap: 1_000_000,
     };
     pool.set_alpha_params(1, config).unwrap();
@@ -1565,7 +1533,7 @@ fn maintainer_can_set_alpha_params() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 6000,
         liquidation_threshold: 7000,
-        liquidation_bonus: 800,
+        liquidation_fee: 800,
         supply_cap: 1_000_000,
     };
     pool.set_alpha_params(1, config).unwrap();
@@ -1582,7 +1550,7 @@ fn non_maintainer_cannot_set_params() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 6000,
         liquidation_threshold: 7000,
-        liquidation_bonus: 800,
+        liquidation_fee: 800,
         supply_cap: 1_000_000,
     };
     assert_eq!(
@@ -1616,7 +1584,7 @@ fn governance_can_still_call_maintainer_functions() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 6000,
         liquidation_threshold: 7000,
-        liquidation_bonus: 800,
+        liquidation_fee: 800,
         supply_cap: 1_000_000,
     };
     // governance should pass ensure_maintainer (governance || maintainer)
@@ -1634,7 +1602,7 @@ fn new_maintainer_can_call_maintainer_functions() {
     let config = AlphaMarketParamsConfig {
         collateral_factor: 6000,
         liquidation_threshold: 7000,
-        liquidation_bonus: 800,
+        liquidation_fee: 800,
         supply_cap: 1_000_000,
     };
     pool.set_alpha_params(1, config).unwrap();
@@ -2406,23 +2374,89 @@ fn health_factor_is_zero_without_collateral() {
     assert!(hf.into_inner() < Ratio::one().into_inner());
 }
 
-/// Pins the liquidation seizure against the worked example in
-/// `docs/calculations/lending-pool.md` §6: covering 172.5 TUSDT of debt at an
-/// alpha price of 0.57 TUSDT/α with the default 5% bonus seizes
-/// floor(172.5 × 1.05) = 181.125 TUSDT of collateral =
-/// floor(181.125 / 0.57) = 317.763158 α. Without a yield index the principal
-/// seized equals the effective alpha seized.
+/// A healthy-but-liquidatable position (C = 125 TUSDT, D = 100 TUSDT at
+/// HF = 0.75): the liquidator pays exactly the debt, the platform takes its
+/// full 5% fee of the collateral, and there is no deficit. Platform value =
+/// 5% × 125 = 6.25 TUSDT; the liquidator keeps 118.75 TUSDT of collateral
+/// against a 100 TUSDT payment (+18.75% of debt).
 #[ink::test]
-fn liquidation_seizure_applies_bonus() {
-    let (pool, _accounts) = setup_with_alpha(1);
+fn full_seizure_split_healthy_pays_full_debt_with_fee() {
+    let fee = Ratio::from_basis_points(500); // 5%
+    let (payment, platform_share, deficit) =
+        TusdtLendingPool::full_seizure_split(125_000_000_000, 100_000_000_000, fee).unwrap();
 
-    // 0.57 TUSDT per alpha.
-    let collateral_price = Ratio::from_inner(570_000_000_000_000_000);
-    let (alpha_to_seize, alpha_principal_to_seize) =
-        pool.compute_liquidation_seizure(1, collateral_price, 172_500_000_000).unwrap();
+    assert_eq!(payment, 100_000_000_000);
+    assert_eq!(platform_share, Ratio::from_basis_points(500));
+    assert_eq!(deficit, 0);
 
-    assert_eq!(alpha_to_seize, 317_763_157_894);
-    assert_eq!(alpha_principal_to_seize, alpha_to_seize);
+    // The platform's share of the collateral is exactly 5% of 125 TUSDT.
+    let platform_value = platform_share
+        .checked_mul_value(125_000_000_000u128)
+        .expect("platform value must fit");
+    assert_eq!(platform_value, 6_250_000_000);
+}
+
+/// When the fee exceeds the surplus share, the share is capped at the surplus
+/// so the liquidator can never lose principal: with C = 105, D = 100 the
+/// surplus share is (105−100)/105 ≈ 4.7619%, below the 5% fee, and the
+/// liquidator keeps at least D worth of collateral (break-even at worst).
+#[ink::test]
+fn full_seizure_split_caps_fee_at_the_surplus_share() {
+    let fee = Ratio::from_basis_points(500); // 5% — above the surplus share
+    let (payment, platform_share, deficit) =
+        TusdtLendingPool::full_seizure_split(105_000_000_000, 100_000_000_000, fee).unwrap();
+
+    assert_eq!(payment, 100_000_000_000);
+    // floor(5e9 × 1e18 / 105e9) = 4.7619…%
+    assert_eq!(platform_share, Ratio::from_inner(47_619_047_619_047_619));
+    assert_eq!(deficit, 0);
+
+    // The liquidator's received value never falls below the debt: the
+    // platform's cut is at most the surplus (5 TUSDT here).
+    let platform_value = platform_share
+        .checked_mul_value(105_000_000_000u128)
+        .expect("platform value must fit");
+    assert!(platform_value <= 5_000_000_000, "cap must leave D to the liquidator");
+}
+
+/// A higher configured fee is capped when the surplus is thin: fee 30% but
+/// surplus share only 20% (C = 125, D = 100) → the platform gets 20%, not 30%.
+#[ink::test]
+fn full_seizure_split_caps_a_high_fee_to_the_surplus() {
+    let fee = Ratio::from_basis_points(3000); // 30%
+    let (payment, platform_share, deficit) =
+        TusdtLendingPool::full_seizure_split(125_000_000_000, 100_000_000_000, fee).unwrap();
+
+    assert_eq!(payment, 100_000_000_000);
+    // (125−100)/125 = 20% exactly.
+    assert_eq!(platform_share, Ratio::from_inner(200_000_000_000_000_000));
+    assert_eq!(deficit, 0);
+}
+
+/// With collateral exactly equal to the debt there is no surplus, so the
+/// platform share is zero and the liquidator pays the debt (break-even).
+#[ink::test]
+fn full_seizure_split_exact_cover_has_no_surplus_share() {
+    let fee = Ratio::from_basis_points(500);
+    let (payment, platform_share, deficit) =
+        TusdtLendingPool::full_seizure_split(100_000_000_000, 100_000_000_000, fee).unwrap();
+
+    assert_eq!(payment, 100_000_000_000);
+    assert_eq!(platform_share, Ratio::from_inner(0));
+    assert_eq!(deficit, 0);
+}
+
+/// Underwater (C < D): the liquidator pays the collateral value (break-even,
+/// never a loss), the platform takes nothing, and the residual is a deficit.
+#[ink::test]
+fn full_seizure_split_underwater_breaks_even_and_reports_deficit() {
+    let fee = Ratio::from_basis_points(500);
+    let (payment, platform_share, deficit) =
+        TusdtLendingPool::full_seizure_split(80_000_000_000, 100_000_000_000, fee).unwrap();
+
+    assert_eq!(payment, 80_000_000_000);
+    assert_eq!(platform_share, Ratio::from_inner(0));
+    assert_eq!(deficit, 20_000_000_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -2571,116 +2605,14 @@ fn prepaid_hour_makes_debt_exceed_principal_immediately() {
 }
 
 // ---------------------------------------------------------------------------
-// Liquidation: collateral clamp, full-close threshold, bad-debt deficit
+// Liquidation: full-seizure split, bad-debt deficit
 //
 // The `liquidate` message ends in cross-contract calls (oracle / ERC20 / chain
 // extension) that cannot run off-chain, so the new math is pinned at the pure
-// helper level (`clamp_liquidation_seizure`) and at the bookkeeping level, and
-// the deficit flow is driven through the message that CAN run off-chain
+// helper level (`full_seizure_split`) and at the bookkeeping level, and the
+// deficit flow is driven through the message that CAN run off-chain
 // (`cover_deficit`). End-to-end liquidation coverage lives in `tools/e2e`.
 // ---------------------------------------------------------------------------
-
-/// When the computed seizure fits the position, no clamp is applied.
-#[ink::test]
-fn clamp_liquidation_seizure_returns_none_when_cover_fits() {
-    let bonus = Ratio::from_inner(1_050_000_000_000_000_000); // 1.05
-    let clamped = TusdtLendingPool::clamp_liquidation_seizure(
-        Ratio::one(),
-        bonus,
-        10_000_000_000, // available principal
-        3_000_000_000,  // effective alpha requested
-        3_000_000_000,  // principal requested
-    )
-    .unwrap();
-    assert!(clamped.is_none());
-}
-
-/// The failing reproduction: requested 64.642006 α vs 28.806386 available. The
-/// clamp must seize exactly the available principal and back-compute the debt
-/// the seized collateral covers at the bonus rate, rounded UP so the borrower's
-/// debt is retired by at least the collateral's worth.
-#[ink::test]
-fn clamp_liquidation_seizure_back_computes_cover_from_available_collateral() {
-    let bonus = Ratio::from_inner(1_050_000_000_000_000_000); // 1.05
-    let clamped = TusdtLendingPool::clamp_liquidation_seizure(
-        Ratio::one(),      // 1 TUSDT per alpha
-        bonus,
-        1_000_000_000,     // available: 1 alpha
-        2_000_000_000,     // requested effective alpha (2 alpha — exceeds)
-        2_000_000_000,     // requested principal
-    )
-    .unwrap()
-    .expect("seizure must clamp");
-
-    let (alpha_to_seize, alpha_principal_to_seize, cover_value_tusdt) = clamped;
-    // Principal is the binding constraint: the full position is seized.
-    assert_eq!(alpha_principal_to_seize, 1_000_000_000);
-    assert_eq!(alpha_to_seize, 1_000_000_000); // effective == principal
-    // cover = ceil(collateral_value / (1 + bonus)) = ceil(1 TUSDT / 1.05).
-    assert_eq!(cover_value_tusdt, 952_380_953);
-    // The ceiling is the smallest cover that repays the collateral's full value
-    // at the bonus rate: (cover - 1) × 1.05 < collateral_value <= cover × 1.05.
-    assert!(bonus.checked_mul_value(cover_value_tusdt.into()).unwrap() >= 1_000_000_000);
-    assert!(bonus.checked_mul_value((cover_value_tusdt - 1).into()).unwrap() < 1_000_000_000);
-}
-
-/// Without a yield index the effective alpha transferred equals the principal.
-#[ink::test]
-fn clamp_liquidation_seizure_effective_equals_principal() {
-    let bonus = Ratio::from_inner(1_050_000_000_000_000_000);
-    let clamped = TusdtLendingPool::clamp_liquidation_seizure(
-        Ratio::one(),
-        bonus,
-        1_000_000_000,                                // 1 alpha principal
-        5_000_000_000,
-        5_000_000_000,
-    )
-    .unwrap()
-    .expect("seizure must clamp");
-
-    let (alpha_to_seize, alpha_principal_to_seize, cover_value_tusdt) = clamped;
-    // 1 principal → 1 effective alpha transferred.
-    assert_eq!(alpha_principal_to_seize, 1_000_000_000);
-    assert_eq!(alpha_to_seize, 1_000_000_000);
-    // cover = ceil(1 TUSDT / 1.05).
-    assert_eq!(cover_value_tusdt, 952_380_953);
-}
-
-/// The full-close threshold is a valid-but-bounded global parameter.
-#[ink::test]
-fn global_params_rejects_invalid_full_close_threshold() {
-    let base = PoolGlobalParamsConfig {
-        max_oracle_age_ms: 1_800_000,
-        close_factor: 5000,
-        full_close_hf_threshold: 9500,
-        supply_cap_tao: 0,
-        supply_cap_tusdt: 0,
-        borrow_cap_tao: 0,
-        borrow_cap_tusdt: 0,
-    };
-
-    // Zero is invalid — the full-close branch must never be unboundedly live.
-    let mut zero = base;
-    zero.full_close_hf_threshold = 0;
-    assert_eq!(TusdtLendingPool::global_params_from_config(zero), Err(Error::InvalidParam));
-
-    // Above 100% is invalid.
-    let mut high = base;
-    high.full_close_hf_threshold = 10_001;
-    assert_eq!(TusdtLendingPool::global_params_from_config(high), Err(Error::InvalidParam));
-
-    // Exactly 100% is legal (full close whenever liquidatable).
-    let mut full = base;
-    full.full_close_hf_threshold = 10_000;
-    let params = TusdtLendingPool::global_params_from_config(full).unwrap();
-    assert_eq!(params.full_close_hf_threshold, Ratio::one());
-
-    // And the default is 95%.
-    assert_eq!(
-        default_global_params().full_close_hf_threshold,
-        Ratio::from_basis_points(9500)
-    );
-}
 
 /// The native treasury sweep must never touch supplier face value, the accrued
 /// reserve, or an unfunded deficit — only cash above all committed claims.

@@ -115,85 +115,46 @@ impl TusdtLendingPool {
             Ok(min_factor)
         }
 
-    /// Computes the alpha collateral to seize for covering `cover_value_tusdt` of
-    /// borrower debt, applying the liquidation bonus.
-    /// Returns `(alpha_to_seize, alpha_principal_to_seize)`. Errors:
-    /// `Error::ArithmeticError`.
-    pub(crate) fn compute_liquidation_seizure(
-        &self,
-        collateral_netuid: u16,
-        collateral_price: Ratio,
-        cover_value_tusdt: Balance,
-    ) -> Result<(Balance, Balance)> {
-        let alpha_params =
-            self.alpha_params.get(collateral_netuid).unwrap_or(default_alpha_params());
-        let bonus_multiplier = Ratio::from_inner(
-            Ratio::one()
-                .into_inner()
-                .checked_add(alpha_params.liquidation_bonus.into_inner())
-                .ok_or(Error::ArithmeticError)?,
-        );
-        let collateral_value_tusdt = bonus_multiplier
-            .checked_mul_value(cover_value_tusdt.into())
-            .and_then(|v| Balance::try_from(v).ok())
-            .ok_or(Error::ArithmeticError)?;
-        // alpha_to_seize = collateral_value_tusdt / collateral_price —
-        // checked_div_value(value) computes value / self, so the Ratio must
-        // be the collateral_price (divisor).
-        let alpha_to_seize = collateral_price
-            .checked_div_value(collateral_value_tusdt.into())
-            .and_then(|v| Balance::try_from(v).ok())
-            .ok_or(Error::ArithmeticError)?;
-
-        // Without a yield index the principal equals the effective alpha seized.
-        let alpha_principal_to_seize = alpha_to_seize;
-        Ok((alpha_to_seize, alpha_principal_to_seize))
-    }
-
-    /// Clamps a liquidation seizure to the borrower's available collateral and
-    /// back-computes the debt the seized collateral actually covers.
+    /// Splits a full-position liquidation into the liquidator's payment, the
+    /// platform's share of the seized collateral, and the residual deficit.
     ///
-    /// When the un-clamped seizure would exceed the position, the available
-    /// principal is the binding constraint: the liquidator receives at most the
-    /// borrower's entire remaining collateral, so they may only be asked to pay
-    /// for what they actually receive. Returns `None` when no clamp is needed,
-    /// or `Some((alpha_to_seize, alpha_principal_to_seize, cover_value_tusdt))`
-    /// with the clamped values and the back-computed covered debt value.
+    /// - `C > D` (collateral value exceeds the debt value): the liquidator
+    ///   pays exactly the debt `D`; the platform takes `min(fee, (C−D)/C)`
+    ///   of the collateral alpha — the fee, capped at the surplus share so
+    ///   the liquidator can never lose principal (no stuck band); no deficit.
+    /// - `C <= D` (underwater): the liquidator pays the full collateral value
+    ///   `C` (break-even, never a loss), the platform takes nothing, and the
+    ///   residual `D − C` is written off as a market deficit.
     ///
-    /// Rounding is protocol-favourable throughout (Aave's Ceil direction on the
-    /// debt back-computation): the effective alpha seized floors, and the
-    /// covered debt value is `collateral_value / (1 + bonus)` rounded UP, so
-    /// the borrower's debt is retired by at least the collateral's worth and
-    /// the liquidator can never be subsidised by rounding.
-    ///
+    /// The returned `platform_share` is a 1e18 ratio applied per-netuid to
+    /// the alpha principal. `payment_value` and `deficit_value` are in TUSDT
+    /// value (9-decimal) units. The share depends only on `C`, `D` and the
+    /// netuid's fee; the payment and deficit are the same for every netuid.
     /// Errors: `Error::ArithmeticError`.
-    pub(crate) fn clamp_liquidation_seizure(
-        collateral_price: Ratio,
-        bonus_multiplier: Ratio,
-        available_principal: Balance,
-        _alpha_to_seize: Balance,
-        alpha_principal_to_seize: Balance,
-    ) -> Result<Option<(Balance, Balance, Balance)>> {
-        if alpha_principal_to_seize <= available_principal {
-            return Ok(None);
+    pub(crate) fn full_seizure_split(
+        collateral_value: Balance,
+        debt_value: Balance,
+        fee: Ratio,
+    ) -> Result<(Balance, Ratio, Balance)> {
+        if collateral_value > debt_value {
+            let surplus =
+                collateral_value.checked_sub(debt_value).ok_or(Error::ArithmeticError)?;
+            // (C − D) / C as a 1e18 ratio — checked_div_int takes the RAW
+            // integer divisor (never a Ratio inner).
+            let surplus_share = Ratio::from_integer(surplus.into())
+                .checked_div_int(collateral_value.into())
+                .ok_or(Error::ArithmeticError)?;
+            let platform_share = if fee.into_inner() < surplus_share.into_inner() {
+                fee
+            } else {
+                surplus_share
+            };
+            Ok((debt_value, platform_share, 0))
+        } else {
+            let deficit =
+                debt_value.checked_sub(collateral_value).ok_or(Error::ArithmeticError)?;
+            Ok((collateral_value, Ratio::from_inner(0), deficit))
         }
-        // Principal is the binding constraint: seize the full remaining
-        // position and re-derive the effective alpha actually transferred.
-        let principal = available_principal;
-        // Effective alpha equals the principal (no yield index).
-        let effective = principal;
-        // The seized collateral's TUSDT value at the current price.
-        let collateral_value = collateral_price
-            .checked_mul_value(effective.into())
-            .and_then(|v| Balance::try_from(v).ok())
-            .ok_or(Error::ArithmeticError)?;
-        // cover = collateral_value / (1 + bonus), rounded UP: the liquidator
-        // pays for the collateral at the bonus rate, never better.
-        let cover_value_tusdt = bonus_multiplier
-            .checked_div_value_ceil(collateral_value.into())
-            .and_then(|v| Balance::try_from(v).ok())
-            .ok_or(Error::ArithmeticError)?;
-        Ok(Some((effective, principal, cover_value_tusdt)))
     }
 
     /// Computes the user's total alpha collateral value in TUSDT (9-decimal

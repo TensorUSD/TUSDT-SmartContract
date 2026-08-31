@@ -14,7 +14,7 @@ every error name links into the catalog in [`../errors/`](../errors/index.md).
 | Guide | What it walks through |
 |---|---|
 | [vault-alpha.md](vault-alpha.md) | CDP vault: alpha pricing, max borrow, LTV, the strict liquidation boundary, the full auction (min bid → settle fee split), parameter sensitivity, fee/boundary cases. |
-| [lending-pool.md](lending-pool.md) | Lending pool: the rate curve and APY derivation, hourly interest accrual with a prepaid first hour and a full lifecycle example, scaled debt and the ceil/floor pairing, lTokens and the exchange rate, health factor and borrow capacity, liquidation (close factor, full-close threshold, collateral clamp, bad-debt write-off), and edge cases. |
+| [lending-pool.md](lending-pool.md) | Lending pool: the rate curve and APY derivation, hourly interest accrual with a prepaid first hour and a full lifecycle example, scaled debt and the ceil/floor pairing, lTokens and the exchange rate, health factor and borrow capacity, liquidation (full-seizure split, platform fee, underwater deficit write-off), and edge cases. |
 
 ## Where each question is answered
 

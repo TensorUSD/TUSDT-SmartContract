@@ -10,8 +10,9 @@ the exact integer math the contract uses. Companion to the reference page
 > harness reimplementing the contract's fixed-point ops exactly (truncating 1e18
 > `Ratio` mul/div, square-and-multiply `pow_fixed`, ceiling scaled-debt conversion),
 > reproducing the pins in `tests.rs`: the rate-curve points, the live-chain borrow
-> index `1_000_316_946_018_546_683`, the mint/redeem tests, and the liquidation
-> bookkeeping test (`index 1.4, scaled 3 → debt 4`).
+> index `1_000_316_946_018_546_683`, the mint/redeem tests, the liquidation
+> bookkeeping test (`index 1.4, scaled 3 → debt 4`), and the full-seizure split pins
+> (`C=125/D=100 → 5% share`, `C=105/D=100 → 4.7619% share`, `C=80/D=100 → deficit 20`).
 >
 > The health-factor functions (`get_health_factor`, `get_available_borrow_tusdt`,
 > `is_liquidatable`, value getters) are `pub` but **not** `#[ink(message)]` — not
@@ -250,22 +251,34 @@ even though HF is healthy: CF < LT means borrow power runs out *before* liquidat
 
 **When.** `is_liquidatable` = HF < 1.0 (strict), recomputed from live prices.
 Interest on **both** debt markets is accrued at the start of `liquidate` so a stale
-index can't understate debt; oracle prices are re-read and staleness-checked.
+index can't understate the debt the liquidator pays; oracle prices are re-read and
+staleness-checked.
 
-**How.** Anyone calls `liquidate(borrower, debt_market, debt_to_cover,
-collateral_netuid)` — payable. The liquidator repays debt **on behalf of the
-borrower** and receives alpha at a discount:
+**How.** Anyone calls `liquidate(borrower)` — payable, **one call**. The liquidator
+pays the borrower's **entire debt on both markets** (TAO + TUSDT, with accrued
+interest) and receives the borrower's **entire alpha collateral across every
+approved netuid**, minus the platform's per-netuid `liquidation_fee` (default 5%).
+The split is decided by the position totals — collateral value `C` (all netuids,
+current prices) and debt value `D` (TAO debt + TUSDT debt at the oracle price):
 
 ```text
-max_cover = floor(close_factor × debt_value)     close_factor default 50%, max 50%
-α seized  = floor(cover × (1 + bonus) / collateral_price)   bonus default 5%, max 25%
+C > D:   payment = D;  platform_share = min(fee, (C − D) / C)   per netuid
+C ≤ D:   payment = C;  platform_share = 0;  deficit = D − C     market deficit
 ```
 
-Debt repayment: TAO market → the call must carry ≥ the covered TAO as `value` (excess
-refunded); TUSDT market → `transfer_from` (pre-approve the pool). The seized alpha is
-transferred to the liquidator's coldkey under the pool hotkey (`transfer_stake`, ext
-fn 6). Bookkeeping subtracts `min(ceil(covered/index), pos.scaled)` from position and
-market total in lockstep; principal retires dollar-for-dollar.
+The `min` cap at the surplus share is what guarantees the liquidator never loses
+principal: the platform's cut can never exceed the surplus, so the liquidator
+always keeps collateral worth at least `D` — break-even at worst. (The rounding
+remainder of the share also stays with the liquidator.)
+
+Debt repayment: TAO market → the call must carry ≥ the covered TAO as `value`
+(excess refunded); TUSDT market → `transfer_from` (pre-approve the pool). The
+seized alpha is transferred to the liquidator's coldkey under the pool hotkey
+(`transfer_stake`, ext fn 6) — the platform's share first, then the liquidator's,
+per netuid. Bookkeeping subtracts the same scaled units from position and market
+total in lockstep; principal retires dollar-for-dollar; every alpha position is
+cleared. `Liquidated` reports `{user, liquidator, collateral_netuids,
+collateral_seized, platform_alpha, debt_covered_tao, debt_covered_tusdt, deficit}`.
 
 **Boundary: where liquidation begins.** With 690 TUSDT collateral and 345 TUSDT
 debt, HF ≥ 1 requires `0.6 × (oracle × 0.003 × 1,000) ≥ 345`, i.e. oracle ≥
@@ -276,69 +289,67 @@ oracle 192: collateral = 576 → 0.6 × 576 = 345.6 ≥ 345 → HF 1.0017 → sa
 oracle 191: collateral = 573 → 0.6 × 573 = 343.8 < 345 → HF 0.9965 → LIQUIDATABLE (any oracle ≤ 191)
 ```
 
-**TUSDT-debt walkthrough.** Oracle drops 230 → 190. Bob calls
-`liquidate(alice, 1, 172.5e9, netuid)`:
+**Worked examples — the split.** The share depends only on `C`, `D`, and the
+netuid's fee (`full_seizure_split`, risk.rs; values in 9-decimal TUSDT units, share
+as a 1e18 ratio). These are the exact pins from `tests.rs`:
 
 ```text
-oracle 190 → collateral = 570 TUSDT;  HF = 0.6 × 570 / 345 = 0.9913 < 1 → liquidatable
-max_cover = floor(0.5 × 345) = 172.5 TUSDT (close factor binds);  actual = min(172.5, 345)
-with bonus = floor(172.5 × 1.05) = 181.125 TUSDT
-α price = 190 × 0.003 = 0.57 TUSDT/α;  α seized = floor(181.125 / 0.57) = 317.763158 α
-post: debt 172.5 TUSDT, α 682.236842;  collateral = 682.236842 × 0.57 = 388.875 TUSDT
-post HF = 0.6 × 388.875 / 172.5 = 1.3526 → healthy again
-Bob paid 172.5 TUSDT, received α worth 181.125 TUSDT → profit 8.625 TUSDT (5% bonus)
+healthy, fee uncapped:  C = 125, D = 100, fee 5%
+  surplus share = (125 − 100) / 125 = 20% ≥ 5% → platform_share = 5%
+  payment = 100;  platform cut = floor(5% × 125) = 6.25
+  liquidator receives 125 − 6.25 = 118.75 of collateral for 100 paid
+  → profit 18.75, i.e. +18.75% of the debt
+
+thin surplus, cap binds:  C = 105, D = 100, fee 5%
+  surplus share = floor(5 × 1e18 / 105) = 47_619_047_619_047_619 inner ≈ 4.7619%
+  < 5% → platform_share capped at 4.7619%
+  platform cut = floor(4.7619% × 105) = 4.999999999 → liquidator keeps 100.000000001
+  → break-even plus 1 rao of rounding (the cap protects the liquidator's principal)
+
+exact cover:  C = D = 100, fee 5%
+  surplus = 0 → platform_share = 0;  payment = 100;  no deficit
+  → liquidator break-even
+
+underwater:  C = 80, D = 100, fee 5%
+  payment = 80 (the collateral's worth);  platform_share = 0;  no surplus to tax
+  deficit = 100 − 80 = 20 → frozen as a market deficit (`DeficitReported`)
 ```
 
-**The full-close branch.** The close factor is 50% only while the health factor
-stays above `full_close_hf_threshold` (default **0.95**). When HF falls below it,
-cover may be **100%** of the debt. In the §5 position (345 TUSDT debt, 1,000 α),
-`HF = 0.6 × O × 3 / 345 < 0.95 ⟺ oracle O < 182.08`:
+> **Exact rao note:** the share cap is computed in 1e18 inner — `floor(5e9 × 1e18 /
+> 105e9) = 47_619_047_619_047_619` — and the platform cut floors to whole rao
+> (`4_999_999_999` in the thin-surplus example), so the liquidator's received value
+> never falls below `D`.
+
+**Full-seizure walkthrough.** Back in the §5 position: 1,000 α, α-price
+3,000,000 rao (0.003 TAO/α), oracle 230 → 190, debt 345 TUSDT:
 
 ```text
-oracle 150 → collateral = 450 TUSDT;  HF = 0.6 × 450 / 345 = 0.7826 < 0.95
-max_cover = 100% × 345 = 345 TUSDT (full close);  α seized = floor(345 × 1.05 / 0.45) = 805 α
-post: debt 0, α 195 → the position is fully closed in ONE liquidation
+oracle 190 → collateral C = 570 TUSDT;  debt D = 345 TUSDT;  HF = 0.9913 < 1
+surplus = 225;  surplus share = 225 / 570 = 39.47% > fee 5% → share = 5%
+payment = 345 TUSDT (the full debt, TUSDT market → transfer_from)
+platform cut = 5% × 1,000 α = 50 α (worth 50 × 0.57 = 28.50 TUSDT)
+liquidator receives 950 α worth 541.50 TUSDT for 345 paid → profit 196.50 (+56.96%)
+post: borrower's debt 0 and alpha 0 — the ENTIRE position is closed in ONE call
 ```
 
-Below `HF < LT × (1 + bonus)` = **0.63** (defaults) every *partial* liquidation makes
-the position worse — seizing `x(1.05)` of collateral while retiring only `x` of debt
-shrinks the numerator faster than the denominator. The full-close branch exists
-precisely to let a liquidator finish such a position before it spirals.
+The borrower's TUSDT debt is retired in full; if she also had TAO debt it would be
+covered in the same call (payment = the full TAO debt as `value`), and every netuid
+with collateral is seized — there is no partial-close choice for the liquidator to
+make.
 
-**Collateral clamp (the "stranded collateral" fix).** If the computed seizure would
-exceed the borrower's collateral, the available principal binds and the covered debt
-is back-computed (`clamp_liquidation_seizure`, risk.rs):
-
-```text
-requested 2 α principal, available 1 α (price 1 TUSDT/α, bonus 5%):
-principal_seized = 1 α;  alpha_seized = 1 α
-cover_value = ceil(1 TUSDT / 1.05) = 952_380_953 rao   # pinned in tests
-(cover − 1) × 1.05 < 1 ≤ cover × 1.05 — the ceiling is the smallest cover
-that retires the collateral's full value at the bonus rate
-```
-
-The liquidation finishes against the collateral that actually exists instead of
-reverting with `CollateralAwardExceedsPosition` and stranding both residual debt and
-residual collateral.
-
-**Bad-debt write-off.** When a liquidation consumes the borrower's entire collateral
-position but debt remains on that market, the residual is written off: it is removed
-from the ledger (utilization and rates are not poisoned) and frozen as a market
-deficit that never compounds (`DeficitReported`). Example from the production repro
-(oracle 230→60, 1,400 α, 0.30 TAO + 40 TUSDT borrowed, HF 0.5878): after five
-50%-cap liquidations the final step requested 64.642006 α against 28.806386
-available — under the new logic it clamps to the 28.806386 α, retires the
-back-computed cover, and the remaining 5.001585 TUSDT of debt becomes a frozen
-deficit (5_001_585_000 face at index 1.0, pinned in
-`bad_debt_write_off_bookkeeping_matches_the_repro`). The maintainer funds it from
-`reserve_accrued` via `cover_deficit`; a deficit larger than the reserve stays on the
-books as an unfunded shortfall (`get_market_deficit`).
+**Bad-debt write-off.** The deficit path is the underwater branch above: when the
+collateral cannot cover the debt (`C ≤ D`), the liquidator pays only `C` and the
+residual `D − C` is written off — removed from the ledger (utilization and rates
+are not poisoned) and frozen as a market deficit that never compounds
+(`DeficitReported`; e.g. C = 80, D = 100 → deficit 20). The maintainer funds it
+from `reserve_accrued` via `cover_deficit`; a deficit larger than the reserve stays
+on the books as an unfunded shortfall (`get_market_deficit`).
 
 **What the borrower must do.** At oracle 190, debt 345 TUSDT (no accrual), HF = 0.9913:
 
 - **Repay** exactly `345 − 0.6 × 570 = 345 − 342 = 3 TUSDT` → HF = 1.0 exactly (safe: strict `<`).
 - **Or deposit alpha**: need `0.6 × collateral ≥ 345` → collateral ≥ 575 → α ≥ 575 / 0.57 = 1,008.77 → deposit ≈ 8.77 α.
-- **Do nothing** → anyone liquidates.
+- **Do nothing** → anyone liquidates the whole position.
 - **Withdrawing alpha** is blocked when it would break health (`HealthFactorBelowThreshold`): the most she can withdraw leaves `0.6 × collateral ≥ remaining debt` — the same HF-1.0 boundary on her post-liquidation balances.
 
 ## 7. Edge cases and parameter variations
@@ -373,8 +384,10 @@ U = 80%:  1% + 3% × 80/85 = 3.8235%      U = 90%:  1% + 3% + 47% × 5/15 = 19.6
 **Invalid configs** (governance cannot set; `InvalidParam` / `InvalidRatio`):
 - Interest: optimal 0 or > 100%; `slope1 + slope2 > 100%` (e.g. 2% + 198% — a
   "steep" 200% curve is rejected); reserve ≥ 100%; `base + slope1 + slope2 > 100%`.
-- Alpha market: `CF ≥ LT` (e.g. 50/50), CF 0, LT > 100%, bonus > 25%.
-- Global: close factor 0 or > 50%, performance fee > 50%, oracle age 0.
+- Alpha market: `CF ≥ LT` (e.g. 50/50), CF 0, LT > 100%, fee > 100%, or
+  `fee + LT > 100%` (e.g. 5% fee + 96% LT — the fee must fit inside the
+  liquidation room so the platform's cut can never exceed the surplus).
+- Global: oracle age 0.
 
 **Valid alternative alpha params** CF 70% / LT 80% on the §5 position (690
 collateral, 345 debt): available borrow rises 0 → **138 TUSDT** (`0.7 × 690 − 345`), HF rises 1.2 → **1.6** (`0.8 × 690 / 345`).
@@ -384,13 +397,12 @@ debt 99.999999999 → 2 rao reverts `BorrowCapExceeded`, 1 rao lands exactly on 
 cap. Supply cap 500 TAO with 499.999999999 face supply → 2 rao `SupplyCapExceeded`,
 1 rao ok. Cash 100 rao, borrow 101 → `LiquidityInsufficient`.
 
-**Boundary reverts**: HF exactly 1.0 → `NotLiquidatable`; `debt_to_cover = 0` or
-repay 0 → `ZeroAmount`; `debt_market = 2` → `InvalidDebtMarket`; repay 10,000 against
-a 100-rao debt → clamps to 100, clears, no error. The close factor **clamps instead
-of erroring**, so `CloseFactorExceeded` stays declared-but-never-returned; a seizure
-larger than the position no longer reverts either — it clamps to the available
-collateral and back-computes the cover (see §6), leaving `CollateralAwardExceedsPosition`
-defensively unreachable.
+**Boundary reverts**: HF exactly 1.0 → `NotLiquidatable`; no alpha collateral or no
+debt → `ZeroAmount`; repay 10,000 against a 100-rao debt → clamps to 100, clears, no
+error. The legacy `CloseFactorExceeded`, `InvalidDebtMarket`, and
+`CollateralAwardExceedsPosition` variants are retained for ABI stability but no
+current code path returns them — the full-seizure model has no close factor, takes
+no `debt_market` argument, and seizes exactly the collateral that exists.
 
 ## 8. Quick reference (defaults)
 
@@ -404,11 +416,11 @@ defensively unreachable.
 | lTokens | mint `floor(amount / ER)`, redeem `floor(ltokens × ER)`; ER resets only on full drain |
 | Health factor | `maxLT × collateral_value / debt_value` — global, liquidatable ⇔ HF < 1.0 |
 | Borrow capacity | `floor(minCF × collateral) − debt` |
-| Liquidation | cover ≤ `floor(50% × debt)` — or 100% when `HF < 0.95`; seize `floor(cover × 1.05 / price)`; 5% bonus; seizure clamps to available collateral; residual debt → frozen market deficit (`cover_deficit` funds from reserve) |
-| Params | TAO 0/4%/96%, TUSDT 0/3%/97%, optimal 80%, reserve 20%; CF 50%, LT 60%, bonus 5%, close 50%, **full-close HF 95%** |
+| Liquidation | `liquidate(borrower)` pays the full debt on both markets; platform share per netuid = `min(fee, (C−D)/C)` (default fee 5%); underwater → pay `C`, deficit `D−C` → frozen market deficit (`cover_deficit` funds from reserve) |
+| Params | TAO 0/4%/96%, TUSDT 0/3%/97%, optimal 80%, reserve 20%; CF 50%, LT 60%, liquidation fee 5% |
 
 Errors for these flows: `BorrowHealthExceeded`, `LiquidityInsufficient`,
 `MintBelowPrecision`, `SupplyCapExceeded`, `BorrowCapExceeded`, `NotLiquidatable`,
-`HealthFactorBelowThreshold`, `CollateralAwardExceedsPosition`, `ZeroAmount`,
-`InvalidDebtMarket`, `TokenTransferFromFailed`, `ArithmeticError`, `OraclePriceStale`, `OraclePriceUnavailable` — see
+`HealthFactorBelowThreshold`, `ZeroAmount`,
+`TokenTransferFromFailed`, `ArithmeticError`, `OraclePriceStale`, `OraclePriceUnavailable` — see
 [`../errors/lending-pool.md`](../errors/lending-pool.md).

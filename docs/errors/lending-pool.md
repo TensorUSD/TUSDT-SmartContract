@@ -10,7 +10,7 @@
 
 Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [index.md](index.md) for how errors surface in dedot/dApp/CLI clients.
 
-**Reserved variants** (declared, not returned by any current message): `RepayAmountTooHigh`, `NoAlphaStakeFound`, `OracleCallFailed`, `InvalidCollateralNetuid`, `CloseFactorExceeded`, `PositionNotFound`, `CollateralAwardExceedsPosition` (defensively unreachable since the liquidation clamp fix of 2026-08-26 — the seizure now clamps to available collateral instead of reverting).
+**Reserved variants** (declared, not returned by any current message): `RepayAmountTooHigh`, `NoAlphaStakeFound`, `OracleCallFailed`, `InvalidCollateralNetuid`, `InvalidDebtMarket`, `CloseFactorExceeded`, `PositionNotFound`, `CollateralAwardExceedsPosition` (`InvalidDebtMarket`, `CloseFactorExceeded`, and `CollateralAwardExceedsPosition` are legacy from the pre-full-seizure liquidation model — `liquidate(borrower)` takes no debt-market argument, has no close factor, and seizes exactly the collateral that exists, so none of them is reachable).
 
 Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new variants** — it reuses `NotGovernance`, `InvalidParam`, `LiquidityInsufficient`, `ChainExtensionFailed` (plus the existing pause/reentrancy guards).
 
@@ -292,9 +292,11 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Group:** Pricing & health
 
-**Returned by:** `liquidate` (message)
+**Returned by:** *no production code returns this variant (reserved)*
 
-**Client guidance:** Input error: liquidations must reference a valid debt market id.
+**Client guidance:** Reserved: legacy from the pre-full-seizure liquidation model —
+`liquidate(borrower)` no longer takes a `debt_market` argument (the full position on
+both markets is always covered). Report if observed on-chain.
 
 ### `CloseFactorExceeded`
 
@@ -304,10 +306,10 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Returned by:** *no production code returns this variant (reserved)*
 
-**Client guidance:** Reserved: declared but not returned by any current message. The
-close-factor cap (and the `full_close_hf_threshold` full-close branch) **clamps**
-the cover instead of erroring, so this variant is expected to stay dead. Report if
-observed on-chain.
+**Client guidance:** Reserved: declared but not returned by any current message.
+Legacy from the pre-full-seizure liquidation model — the close factor was removed
+(`liquidate(borrower)` covers the entire debt in one call), so this variant is
+expected to stay dead. Report if observed on-chain.
 
 ### `CollateralAwardExceedsPosition`
 
@@ -315,16 +317,14 @@ observed on-chain.
 
 **Group:** Pricing & health
 
-**Returned by:** *defensively unreachable (reserved)* — `liquidate` used to return it
-when the computed alpha seizure exceeded the borrower's position; since 2026-08-26
-the seizure clamps to the available collateral and back-computes the covered debt
-(`clamp_liquidation_seizure`), so this variant is no longer reachable in normal
-operation. The variant is retained for ABI stability.
+**Returned by:** *structurally unreachable (reserved)* — `liquidate` used to return it
+when a computed alpha seizure exceeded the borrower's position. The full-seizure
+model seizes the borrower's **entire** position — there is no computed seizure that
+could exceed the collateral that exists — so this variant is no longer reachable.
+The variant is retained for ABI stability.
 
-**Client guidance:** Reserved: should never be observed after the clamp fix. If it
-appears on-chain, treat it as an unexpected contract bug (the guard at
-`lib.rs:clamp_liquidation_seizure` returns `None` and the liquidation proceeds with
-the clamped seizure).
+**Client guidance:** Reserved: should never be observed after the full-seizure
+redesign. If it appears on-chain, treat it as an unexpected contract bug.
 
 ### `InvalidRatio`
 

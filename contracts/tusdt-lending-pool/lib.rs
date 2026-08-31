@@ -406,24 +406,32 @@ mod lending_pool {
         pub dest_coldkey: AccountId,
     }
 
-    /// Emitted when an underwater position is liquidated.
+    /// Emitted when an underwater position is liquidated in full. The
+    /// liquidator pays the borrower's entire debt (with accrued interest) on
+    /// both markets and receives the borrower's full alpha collateral minus
+    /// the platform's liquidation fee (taken from the collateral itself).
     #[ink(event)]
     pub struct Liquidated {
         /// Borrower whose position was liquidated.
         #[ink(topic)]
         pub user: AccountId,
-        /// Netuid of the seized alpha collateral.
-        #[ink(topic)]
-        pub collateral_netuid: u16,
-        /// Debt market repaid (0 = TAO, 1 = TUSDT).
-        pub debt_market: u8,
-        /// Debt units repaid by the liquidator.
-        pub debt_covered: Balance,
-        /// Effective alpha seized (equals the principal seized).
-        pub collateral_alpha: Balance,
         /// Account that performed the liquidation.
         #[ink(topic)]
         pub liquidator: AccountId,
+        /// Netuids of the seized alpha collateral.
+        pub collateral_netuids: Vec<u16>,
+        /// Total alpha principal seized across all netuids.
+        pub collateral_seized: Balance,
+        /// Platform's share of the seized alpha, transferred to the platform
+        /// role account.
+        pub platform_alpha: Balance,
+        /// TAO debt repaid by the liquidator (9-decimal units).
+        pub debt_covered_tao: Balance,
+        /// TUSDT debt repaid by the liquidator (9-decimal units).
+        pub debt_covered_tusdt: Balance,
+        /// Face debt written off as a market deficit (0 when the collateral
+        /// covers the debt).
+        pub deficit: Balance,
     }
 
     /// Emitted when excess alpha staking is unstaked in full for a netuid and
@@ -2075,37 +2083,23 @@ mod lending_pool {
         // Liquidation
         // ─────────────────────────────────────────────────────────────
 
-        /// Liquidates an underwater position. The liquidator repays debt on behalf of the
-        /// borrower and receives alpha collateral at a discount (liquidation bonus).
+        /// Liquidates an underwater position in full. The liquidator pays the
+        /// borrower's ENTIRE debt on both markets — TAO and TUSDT, with
+        /// accrued interest — and receives the borrower's full alpha
+        /// collateral across every approved netuid, minus the platform's
+        /// liquidation fee: a percentage of the collateral alpha taken by the
+        /// `platform` role account, capped at the surplus share
+        /// (`min(fee, (C − D) / C)`) so the liquidator never loses principal.
+        /// When the collateral cannot cover the debt, the liquidator pays the
+        /// collateral value (break-even) and the residual is written off as a
+        /// market deficit.
         #[ink(message, payable)]
-        pub fn liquidate(
-            &mut self,
-            borrower: AccountId,
-            debt_market: u8,
-            debt_to_cover: Balance,
-            collateral_netuid: u16,
-        ) -> Result<()> {
+        pub fn liquidate(&mut self, borrower: AccountId) -> Result<()> {
             self.ensure_not_paused()?;
             self.ensure_idle()?;
 
-            if debt_market > 1 {
-                self.set_idle();
-                return Err(Error::InvalidDebtMarket);
-            }
-            if debt_to_cover == 0 {
-                self.set_idle();
-                return Err(Error::ZeroAmount);
-            }
-
-            self.ensure_approved_netuid(collateral_netuid).inspect_err(|_| {
-                self.set_idle();
-            })?;
-
-            // Accrue interest on BOTH debt markets: the health factor and the
-            // close-factor cap read the borrower's debt on both markets, so a
-            // stale borrow index on the non-liquidated market would understate
-            // the accrued interest and let the liquidation cover too little
-            // (principal + accrued interest must both be settled).
+            // Accrue interest on BOTH debt markets first: the debt the
+            // liquidator pays must include accrued interest on both markets.
             self.accrue_interest(0).inspect_err(|_| {
                 self.set_idle();
             })?;
@@ -2115,8 +2109,8 @@ mod lending_pool {
 
             let liquidator = self.env().caller();
 
-            // Verify borrower is liquidatable, computing the health factor once
-            // so the full-close branch below does not re-read the oracle.
+            // Verify the borrower is liquidatable (strict HF < 1.0), computing
+            // the health factor once.
             let health = self.get_health_factor(borrower)?;
             let liquidatable = matches!(
                 health,
@@ -2127,297 +2121,370 @@ mod lending_pool {
                 return Err(Error::NotLiquidatable);
             }
 
-            // Get pricing
             let tusdt_per_tao = self.get_oracle_price().inspect_err(|_| {
                 self.set_idle();
             })?;
-            let collateral_price = self.collateral_price(collateral_netuid).inspect_err(|_| {
-                self.set_idle();
-            })?;
 
-            // Compute borrower's total debt value and the cover cap. The cap is
-            // the close factor, EXCEPT for deeply-underwater positions (health
-            // factor below `full_close_hf_threshold`, default 95%): those may
-            // be covered up to 100% so a liquidator can close a doomed position
-            // completely instead of nibbling it forever. (Below
-            // HF < LT × (1 + bonus) every partial liquidation makes the health
-            // factor worse — the spiral that previously ended in
-            // CollateralAwardExceedsPosition with stranded residual debt.)
-            let debt_value_tusdt = self.get_debt_value_tusdt(borrower)?;
-            let full_close = matches!(
-                health,
-                Some(hf)
-                    if hf.into_inner() < self.global_params.full_close_hf_threshold.into_inner()
-            );
-            let cover_cap = if full_close { Ratio::one() } else { self.global_params.close_factor };
-            let max_cover_tusdt = cover_cap
-                .checked_mul_value(debt_value_tusdt.into())
-                .and_then(|v| Balance::try_from(v).ok())
-                .ok_or(Error::ArithmeticError)?;
+            // ── Compute the full position ──
 
-            // Convert debt_to_cover to TUSDT equivalent
-            let cover_tusdt = if debt_market == 0 {
-                tusdt_per_tao
-                    .checked_mul_value(debt_to_cover.into())
-                    .and_then(|v| Balance::try_from(v).ok())
-                    .ok_or(Error::ArithmeticError)?
-            } else {
-                debt_to_cover
-            };
-            let cover_tusdt = min(cover_tusdt, max_cover_tusdt);
-            if cover_tusdt == 0 {
+            // Collateral: every approved netuid with principal, priced at
+            // current oracle rates. The per-netuid platform share is computed
+            // below once the totals (C and D) are known.
+            let mut collateral_netuids: Vec<u16> = Vec::new();
+            let mut collateral_positions: Vec<(u16, Balance)> = Vec::new();
+            let mut collateral_total_value: u128 = 0;
+            let market_count = self.market_keys.len();
+            for i in 0..market_count {
+                let market_id = self.market_keys.get(i).ok_or(Error::MarketNotFound)?;
+                if market_id < 2 {
+                    continue;
+                }
+                let netuid = self.market_to_netuid.get(market_id).ok_or(Error::MarketNotFound)?;
+                let pos = self.positions.get((market_id, borrower)).unwrap_or(Position {
+                    ltoken_balance: 0,
+                    scaled_debt: 0,
+                    alpha_principal: 0,
+                });
+                if pos.alpha_principal == 0 {
+                    continue;
+                }
+                let price = self.collateral_price(netuid).inspect_err(|_| {
+                    self.set_idle();
+                })?;
+                let value = price
+                    .checked_mul_value(pos.alpha_principal.into())
+                    .ok_or(Error::ArithmeticError)?;
+                collateral_total_value =
+                    collateral_total_value.checked_add(value).ok_or(Error::ArithmeticError)?;
+                collateral_positions.push((netuid, pos.alpha_principal));
+                collateral_netuids.push(netuid);
+            }
+            let collateral_value =
+                Balance::try_from(collateral_total_value).map_err(|_| Error::ArithmeticError)?;
+            if collateral_positions.is_empty() {
+                // Nothing to seize — the borrower has no alpha collateral.
                 self.set_idle();
                 return Err(Error::ZeroAmount);
             }
 
-            // Re-compute actual debt units to cover (cap at borrower's market debt)
-            let state = self.markets.get(debt_market).ok_or(Error::MarketNotFound)?;
-            let pos = self.positions.get((debt_market, borrower)).unwrap_or(Position {
+            // Debt: both markets' face debts after the accrual above.
+            let tao_state = self.markets.get(0).ok_or(Error::MarketNotFound)?;
+            let tao_pos = self.positions.get((0, borrower)).unwrap_or(Position {
                 ltoken_balance: 0,
                 scaled_debt: 0,
                 alpha_principal: 0,
             });
-            let borrower_debt = if pos.scaled_debt == 0 {
+            let tao_debt = if tao_pos.scaled_debt == 0 {
                 0
             } else {
-                state
-                    .borrow_index
-                    .checked_mul_value(pos.scaled_debt.into())
-                    .and_then(|v| Balance::try_from(v).ok())
-                    .unwrap_or(0)
+                scaled_debt_to_face(tao_pos.scaled_debt, tao_state.borrow_index)
+                    .ok_or(Error::ArithmeticError)?
             };
-
-            let actual_debt_units = if debt_market == 0 {
-                let cover_tao = tusdt_per_tao
-                    .checked_div_value(cover_tusdt.into())
-                    .and_then(|v| Balance::try_from(v).ok())
-                    .ok_or(Error::ArithmeticError)?;
-                min(cover_tao, borrower_debt)
+            let tusdt_state = self.markets.get(1).ok_or(Error::MarketNotFound)?;
+            let tusdt_pos = self.positions.get((1, borrower)).unwrap_or(Position {
+                ltoken_balance: 0,
+                scaled_debt: 0,
+                alpha_principal: 0,
+            });
+            let tusdt_debt = if tusdt_pos.scaled_debt == 0 {
+                0
             } else {
-                min(cover_tusdt, borrower_debt)
+                scaled_debt_to_face(tusdt_pos.scaled_debt, tusdt_state.borrow_index)
+                    .ok_or(Error::ArithmeticError)?
             };
-            // Never cover more than the borrower's actual debt; a zero amount
-            // (e.g. cover floor) has nothing to liquidate.
-            if actual_debt_units == 0 {
+            let tao_debt_value = tusdt_per_tao
+                .checked_mul_value(tao_debt.into())
+                .and_then(|v| Balance::try_from(v).ok())
+                .ok_or(Error::ArithmeticError)?;
+            let debt_value =
+                tao_debt_value.checked_add(tusdt_debt).ok_or(Error::ArithmeticError)?;
+            if debt_value == 0 {
+                // A liquidatable position always has debt; defensive guard
+                // against dividing by zero below.
                 self.set_idle();
                 return Err(Error::ZeroAmount);
             }
 
-            // Compute liquidator payment (in TUSDT value)
-            let cover_value_tusdt = if debt_market == 0 {
-                tusdt_per_tao
-                    .checked_mul_value(actual_debt_units.into())
+            // ── Full-seizure split ──
+            // Per netuid: platform_share = min(fee, (C − D)/C) when C > D,
+            // else 0. The liquidator keeps the rounding remainder, so the
+            // received value never falls below D.
+            let underwater = collateral_value <= debt_value;
+            let mut seized_entries: Vec<(u16, Balance, Ratio)> = Vec::new();
+            let mut total_seized: u128 = 0;
+            let mut total_platform_alpha: u128 = 0;
+            for (netuid, principal) in &collateral_positions {
+                let fee = self
+                    .alpha_params
+                    .get(*netuid)
+                    .unwrap_or(default_alpha_params())
+                    .liquidation_fee;
+                let (_, platform_share, _) =
+                    TusdtLendingPool::full_seizure_split(collateral_value, debt_value, fee)?;
+                let platform_principal = platform_share
+                    .checked_mul_value((*principal).into())
                     .and_then(|v| Balance::try_from(v).ok())
-                    .ok_or(Error::ArithmeticError)?
+                    .ok_or(Error::ArithmeticError)?;
+                total_seized =
+                    total_seized.checked_add((*principal).into()).ok_or(Error::ArithmeticError)?;
+                total_platform_alpha = total_platform_alpha
+                    .checked_add(platform_principal.into())
+                    .ok_or(Error::ArithmeticError)?;
+                seized_entries.push((*netuid, *principal, platform_share));
+            }
+
+            // Payment per market:
+            // - C > D: the full face debt of each market (TAO + TUSDT).
+            // - C <= D: the collateral value, split across markets by
+            //   debt-value share and floored per market, so the liquidator
+            //   never pays more than C in total.
+            let (payment_tao, payment_tusdt): (Balance, Balance) = if !underwater {
+                (tao_debt, tusdt_debt)
             } else {
-                actual_debt_units
+                let pay_tao_value = (collateral_value as u128)
+                    .checked_mul(tao_debt_value as u128)
+                    .and_then(|v| v.checked_div(debt_value as u128))
+                    .and_then(|v| Balance::try_from(v).ok())
+                    .ok_or(Error::ArithmeticError)?;
+                let pay_tao = tusdt_per_tao
+                    .checked_div_value(pay_tao_value.into())
+                    .and_then(|v| Balance::try_from(v).ok())
+                    .ok_or(Error::ArithmeticError)?;
+                let pay_tusdt =
+                    collateral_value.checked_sub(pay_tao_value).ok_or(Error::ArithmeticError)?;
+                (pay_tao, pay_tusdt)
             };
-
-            // Compute collateral to seize with bonus
-            let (alpha_to_seize, alpha_principal_to_seize) = self.compute_liquidation_seizure(
-                collateral_netuid,
-                collateral_price,
-                cover_value_tusdt,
-            )?;
-            let collateral_market_id =
-                self.netuid_to_market.get(collateral_netuid).ok_or(Error::UnapprovedNetuid)?;
-            let collateral_pos = self
-                .positions
-                .get((collateral_market_id, borrower))
-                .unwrap_or(Position { ltoken_balance: 0, scaled_debt: 0, alpha_principal: 0 });
-
-            // Clamp the seizure to the borrower's available collateral and
-            // back-compute the debt it covers (Aave: when collateral is the
-            // binding constraint, the liquidator may only be asked to pay for
-            // what they actually receive). Previously this hard-reverted with
-            // CollateralAwardExceedsPosition, stranding residual debt AND
-            // collateral; now the liquidation finishes against the collateral
-            // that actually exists.
-            let alpha_params =
-                self.alpha_params.get(collateral_netuid).unwrap_or(default_alpha_params());
-            let bonus_multiplier = Ratio::from_inner(
-                Ratio::one()
-                    .into_inner()
-                    .checked_add(alpha_params.liquidation_bonus.into_inner())
-                    .ok_or(Error::ArithmeticError)?,
-            );
-            let clamped = TusdtLendingPool::clamp_liquidation_seizure(
-                collateral_price,
-                bonus_multiplier,
-                collateral_pos.alpha_principal,
-                alpha_to_seize,
-                alpha_principal_to_seize,
-            )?;
-            let (alpha_to_seize, alpha_principal_to_seize, _cover_value_tusdt, actual_debt_units) =
-                match clamped {
-                    // Unclamped path — principal and effective alpha are equal
-                    // (no yield index), so the seized principal never exceeds
-                    // the stake actually removed.
-                    None => (
-                        alpha_to_seize,
-                        alpha_principal_to_seize,
-                        cover_value_tusdt,
-                        actual_debt_units,
-                    ),
-                    Some((a2s, p2s, new_cover)) => {
-                        // Re-derive the debt units the clamped cover supports,
-                        // rounded UP so the borrower's debt is retired by at
-                        // least the collateral's worth.
-                        let new_units = if debt_market == 0 {
-                            let cover_tao = tusdt_per_tao
-                                .checked_div_value_ceil(new_cover.into())
-                                .and_then(|v| Balance::try_from(v).ok())
-                                .ok_or(Error::ArithmeticError)?;
-                            min(cover_tao, borrower_debt)
-                        } else {
-                            min(new_cover, borrower_debt)
-                        };
-                        if new_units == 0 {
-                            self.set_idle();
-                            return Err(Error::ZeroAmount);
-                        }
-                        (a2s, p2s, new_cover, new_units)
-                    },
-                };
-
-            // The clamped (or exactly-fitting) seizure consumes the borrower's
-            // ENTIRE remaining collateral position on this netuid. If debt then
-            // remains on the liquidated market, it is uncollectible and is
-            // written off below.
-            let collateral_exhausted = alpha_principal_to_seize == collateral_pos.alpha_principal
-                && collateral_pos.alpha_principal > 0;
 
             // ── Effects (all before external calls) ──
 
-            // 1. Reduce borrower debt
-            // scaled_repaid = actual_debt_units / borrow_index, rounded UP
-            // (Aave rayDivUp): the borrower's scaled debt must fall by at
-            // least the covered amount so no dust survives in the position or
-            // drifts the market total. Clamped to the position.
-            let scaled_repaid = min(
-                state
-                    .borrow_index
-                    .checked_div_value_ceil(actual_debt_units.into())
-                    .and_then(|v| Balance::try_from(v).ok())
-                    .ok_or(Error::ArithmeticError)?,
-                pos.scaled_debt,
-            );
+            // Retire both markets' debt in scaled lockstep: the market total
+            // loses the SAME scaled units as the borrower's position. When
+            // underwater and the payment does not cover a market's full debt,
+            // the residual is uncollectible and is written off as a frozen
+            // market deficit (it never compounds; `cover_deficit` can later
+            // fund it from reserve_accrued).
+            let mut total_deficit: Balance = 0;
 
-            let mut state = state;
-            // Lockstep scaled accounting (see borrow_tao): the market total
-            // loses the SAME scaled units as the borrower's position.
-            state.total_scaled_debt =
-                state.total_scaled_debt.checked_sub(scaled_repaid).ok_or(Error::ArithmeticError)?;
-            state.total_debt = scaled_debt_to_face(state.total_scaled_debt, state.borrow_index)
-                .ok_or(Error::ArithmeticError)?;
-            self.markets.insert(debt_market, &state);
-
-            let mut pos = pos;
-            pos.scaled_debt =
-                pos.scaled_debt.checked_sub(scaled_repaid).ok_or(Error::ArithmeticError)?;
-            let principal = self.debt_principal.get((debt_market, borrower)).unwrap_or(0);
-            self.debt_principal
-                .insert((debt_market, borrower), &principal.saturating_sub(actual_debt_units));
-            self.positions.insert((debt_market, borrower), &pos);
-            self.update_position_key(debt_market, borrower);
-
-            // 2. Reduce borrower alpha collateral
-            let mut collateral_pos = collateral_pos;
-            collateral_pos.alpha_principal = collateral_pos
-                .alpha_principal
-                .checked_sub(alpha_principal_to_seize)
-                .ok_or(Error::ArithmeticError)?;
-            self.positions.insert((collateral_market_id, borrower), &collateral_pos);
-            self.update_position_key(collateral_market_id, borrower);
-
-            let netuid_collateral =
-                self.netuid_total_collateral.get(collateral_netuid).unwrap_or_default();
-            self.netuid_total_collateral.insert(
-                collateral_netuid,
-                &netuid_collateral
-                    .checked_sub(alpha_principal_to_seize)
-                    .ok_or(Error::ArithmeticError)?,
-            );
-
-            // ── Bad-debt write-off ──
-            // When the borrower's collateral position is fully consumed but
-            // debt remains on the liquidated market, the residual is
-            // uncollectible: the borrower is economically indifferent (their
-            // collateral is gone) and no liquidator will ever cover it. Remove
-            // it from the ledger so utilization and everyone's rates are not
-            // poisoned by phantom debt, and freeze it as a market deficit that
-            // NEVER compounds (it is a face amount, never multiplied by the
-            // borrow index again). The maintainer can later fund it from
-            // reserve_accrued via `cover_deficit`; any remainder stays on the
-            // books as an unfunded shortfall.
-            if collateral_exhausted && pos.scaled_debt > 0 {
-                let deficit_face = scaled_debt_to_face(pos.scaled_debt, state.borrow_index)
-                    .ok_or(Error::ArithmeticError)?;
-                state.total_scaled_debt = state
+            // Market 0 (TAO).
+            let mut tao_state = tao_state;
+            let mut tao_pos = tao_pos;
+            let mut tao_deficit: Balance = 0;
+            if tao_pos.scaled_debt > 0 {
+                let full_clear = payment_tao >= tao_debt;
+                let scaled_repaid = if full_clear {
+                    tao_pos.scaled_debt
+                } else {
+                    min(
+                        tao_state
+                            .borrow_index
+                            .checked_div_value_ceil(payment_tao.into())
+                            .and_then(|v| Balance::try_from(v).ok())
+                            .ok_or(Error::ArithmeticError)?,
+                        tao_pos.scaled_debt,
+                    )
+                };
+                tao_state.total_scaled_debt = tao_state
                     .total_scaled_debt
-                    .checked_sub(pos.scaled_debt)
+                    .checked_sub(scaled_repaid)
                     .ok_or(Error::ArithmeticError)?;
-                state.total_debt = scaled_debt_to_face(state.total_scaled_debt, state.borrow_index)
+                tao_state.total_debt =
+                    scaled_debt_to_face(tao_state.total_scaled_debt, tao_state.borrow_index)
+                        .ok_or(Error::ArithmeticError)?;
+                tao_pos.scaled_debt =
+                    tao_pos.scaled_debt.checked_sub(scaled_repaid).ok_or(Error::ArithmeticError)?;
+                let tao_principal = self.debt_principal.get((0, borrower)).unwrap_or(0);
+                self.debt_principal
+                    .insert((0, borrower), &tao_principal.saturating_sub(payment_tao));
+                if underwater && tao_pos.scaled_debt > 0 {
+                    tao_deficit = scaled_debt_to_face(tao_pos.scaled_debt, tao_state.borrow_index)
+                        .ok_or(Error::ArithmeticError)?;
+                    tao_state.total_scaled_debt = tao_state
+                        .total_scaled_debt
+                        .checked_sub(tao_pos.scaled_debt)
+                        .ok_or(Error::ArithmeticError)?;
+                    tao_state.total_debt =
+                        scaled_debt_to_face(tao_state.total_scaled_debt, tao_state.borrow_index)
+                            .ok_or(Error::ArithmeticError)?;
+                    tao_pos.scaled_debt = 0;
+                    self.debt_principal.insert((0, borrower), &0);
+                }
+                self.markets.insert(0, &tao_state);
+                self.positions.insert((0, borrower), &tao_pos);
+                self.update_position_key(0, borrower);
+            }
+
+            // Market 1 (TUSDT).
+            let mut tusdt_state = tusdt_state;
+            let mut tusdt_pos = tusdt_pos;
+            let mut tusdt_deficit: Balance = 0;
+            if tusdt_pos.scaled_debt > 0 {
+                let full_clear = payment_tusdt >= tusdt_debt;
+                let scaled_repaid = if full_clear {
+                    tusdt_pos.scaled_debt
+                } else {
+                    min(
+                        tusdt_state
+                            .borrow_index
+                            .checked_div_value_ceil(payment_tusdt.into())
+                            .and_then(|v| Balance::try_from(v).ok())
+                            .ok_or(Error::ArithmeticError)?,
+                        tusdt_pos.scaled_debt,
+                    )
+                };
+                tusdt_state.total_scaled_debt = tusdt_state
+                    .total_scaled_debt
+                    .checked_sub(scaled_repaid)
                     .ok_or(Error::ArithmeticError)?;
-                self.markets.insert(debt_market, &state);
+                tusdt_state.total_debt =
+                    scaled_debt_to_face(tusdt_state.total_scaled_debt, tusdt_state.borrow_index)
+                        .ok_or(Error::ArithmeticError)?;
+                tusdt_pos.scaled_debt = tusdt_pos
+                    .scaled_debt
+                    .checked_sub(scaled_repaid)
+                    .ok_or(Error::ArithmeticError)?;
+                let tusdt_principal = self.debt_principal.get((1, borrower)).unwrap_or(0);
+                self.debt_principal
+                    .insert((1, borrower), &tusdt_principal.saturating_sub(payment_tusdt));
+                if underwater && tusdt_pos.scaled_debt > 0 {
+                    tusdt_deficit =
+                        scaled_debt_to_face(tusdt_pos.scaled_debt, tusdt_state.borrow_index)
+                            .ok_or(Error::ArithmeticError)?;
+                    tusdt_state.total_scaled_debt = tusdt_state
+                        .total_scaled_debt
+                        .checked_sub(tusdt_pos.scaled_debt)
+                        .ok_or(Error::ArithmeticError)?;
+                    tusdt_state.total_debt = scaled_debt_to_face(
+                        tusdt_state.total_scaled_debt,
+                        tusdt_state.borrow_index,
+                    )
+                    .ok_or(Error::ArithmeticError)?;
+                    tusdt_pos.scaled_debt = 0;
+                    self.debt_principal.insert((1, borrower), &0);
+                }
+                self.markets.insert(1, &tusdt_state);
+                self.positions.insert((1, borrower), &tusdt_pos);
+                self.update_position_key(1, borrower);
+            }
 
-                pos.scaled_debt = 0;
-                self.debt_principal.insert((debt_market, borrower), &0);
-                self.positions.insert((debt_market, borrower), &pos);
-                self.update_position_key(debt_market, borrower);
-
-                let deficit = self.market_deficit.get(debt_market).unwrap_or(0);
-                self.market_deficit.insert(
-                    debt_market,
-                    &deficit.checked_add(deficit_face).ok_or(Error::ArithmeticError)?,
-                );
+            // Emit the deficit events after both markets' write-offs.
+            if tao_deficit > 0 {
+                total_deficit =
+                    total_deficit.checked_add(tao_deficit).ok_or(Error::ArithmeticError)?;
+                let deficit = self.market_deficit.get(0).unwrap_or(0);
+                self.market_deficit
+                    .insert(0, &deficit.checked_add(tao_deficit).ok_or(Error::ArithmeticError)?);
                 self.env().emit_event(DeficitReported {
-                    market: debt_market,
+                    market: 0,
                     user: borrower,
-                    amount: deficit_face,
+                    amount: tao_deficit,
                 });
+            }
+            if tusdt_deficit > 0 {
+                total_deficit =
+                    total_deficit.checked_add(tusdt_deficit).ok_or(Error::ArithmeticError)?;
+                let deficit = self.market_deficit.get(1).unwrap_or(0);
+                self.market_deficit
+                    .insert(1, &deficit.checked_add(tusdt_deficit).ok_or(Error::ArithmeticError)?);
+                self.env().emit_event(DeficitReported {
+                    market: 1,
+                    user: borrower,
+                    amount: tusdt_deficit,
+                });
+            }
+
+            // Clear the borrower's alpha positions and the per-netuid totals.
+            for (netuid, principal, _platform_share) in &seized_entries {
+                let market_id =
+                    self.netuid_to_market.get(*netuid).ok_or(Error::UnapprovedNetuid)?;
+                let mut pos = self.positions.get((market_id, borrower)).unwrap_or(Position {
+                    ltoken_balance: 0,
+                    scaled_debt: 0,
+                    alpha_principal: 0,
+                });
+                pos.alpha_principal = 0;
+                self.positions.insert((market_id, borrower), &pos);
+                self.update_position_key(market_id, borrower);
+
+                let netuid_collateral =
+                    self.netuid_total_collateral.get(*netuid).unwrap_or_default();
+                self.netuid_total_collateral.insert(
+                    *netuid,
+                    &netuid_collateral.checked_sub(*principal).ok_or(Error::ArithmeticError)?,
+                );
             }
 
             // ── External calls ──
 
-            // Accept liquidator's debt repayment
-            if debt_market == 0 {
-                let received = self.env().transferred_value();
-                if received < actual_debt_units {
-                    // Revert would happen automatically via panic, but we mark state inconsistent
-                    // The CEI ordering means the whole tx reverts on failure.
-                    return Err(Error::TransferFailed);
-                }
-                if received > actual_debt_units {
-                    let excess =
-                        received.checked_sub(actual_debt_units).ok_or(Error::ArithmeticError)?;
-                    self.env().transfer(liquidator, excess).map_err(|_| Error::TransferFailed)?;
-                }
-            } else {
+            // Payments (debt only — the platform's cut comes out of the alpha).
+            if payment_tusdt > 0 {
                 self.tusdt
-                    .transfer_from(liquidator, self.env().account_id(), actual_debt_units)
+                    .transfer_from(liquidator, self.env().account_id(), payment_tusdt)
                     .map_err(|_| Error::TokenTransferFromFailed)?;
             }
+            if payment_tao > 0 {
+                let received = self.env().transferred_value();
+                if received < payment_tao {
+                    return Err(Error::TransferFailed);
+                }
+                if received > payment_tao {
+                    let excess = received.checked_sub(payment_tao).ok_or(Error::ArithmeticError)?;
+                    self.env().transfer(liquidator, excess).map_err(|_| Error::TransferFailed)?;
+                }
+            }
 
-            // Transfer alpha collateral to liquidator
-            self.env()
-                .extension()
-                .transfer_stake(
-                    liquidator,
-                    self.pool_hotkey,
-                    collateral_netuid,
-                    collateral_netuid,
-                    alpha_to_seize,
-                )
-                .map_err(|_| Error::ChainExtensionFailed)?;
+            // Alpha transfers: the platform's share first, then the
+            // liquidator's, per netuid. ⚠️ Chain-extension effects are NOT
+            // rolled back if a later call in this loop fails (storage
+            // reverts, staking does not). The realistic failure mode — an
+            // invalid hotkey pairing — fails the FIRST transfer before any
+            // stake moves, and every netuid here was validated by the price
+            // reads above, so a mid-loop failure would require a per-netuid
+            // chain-extension fault (the same surface as the pre-existing
+            // single-transfer liquidate).
+            for (netuid, principal, platform_share) in &seized_entries {
+                let platform_principal = platform_share
+                    .checked_mul_value((*principal).into())
+                    .and_then(|v| Balance::try_from(v).ok())
+                    .ok_or(Error::ArithmeticError)?;
+                let liquidator_principal =
+                    principal.checked_sub(platform_principal).ok_or(Error::ArithmeticError)?;
+                if platform_principal > 0 {
+                    self.env()
+                        .extension()
+                        .transfer_stake(
+                            self.platform,
+                            self.pool_hotkey,
+                            *netuid,
+                            *netuid,
+                            platform_principal,
+                        )
+                        .map_err(|_| Error::ChainExtensionFailed)?;
+                }
+                if liquidator_principal > 0 {
+                    self.env()
+                        .extension()
+                        .transfer_stake(
+                            liquidator,
+                            self.pool_hotkey,
+                            *netuid,
+                            *netuid,
+                            liquidator_principal,
+                        )
+                        .map_err(|_| Error::ChainExtensionFailed)?;
+                }
+            }
 
             self.env().emit_event(Liquidated {
                 user: borrower,
-                collateral_netuid,
-                debt_market,
-                debt_covered: actual_debt_units,
-                collateral_alpha: alpha_to_seize,
                 liquidator,
+                collateral_netuids,
+                collateral_seized: Balance::try_from(total_seized)
+                    .map_err(|_| Error::ArithmeticError)?,
+                platform_alpha: Balance::try_from(total_platform_alpha)
+                    .map_err(|_| Error::ArithmeticError)?,
+                debt_covered_tao: payment_tao,
+                debt_covered_tusdt: payment_tusdt,
+                deficit: total_deficit,
             });
 
             self.set_idle();
