@@ -50,7 +50,7 @@ The incumbent may `trigger_emergency_election` (lets the next `schedule_election
 
 1. **Schedule** — anyone calls `schedule_election()` once `next_election_ts` has passed (or an emergency is pending).
 2. **Stand** — a subnet owner calls `register_candidate(netuid, hotkey)` with ≥ 10 000 TAO staked.
-3. **Vote** — holders call `cast_approval(...)` between the 5th and the 10th (UTC); one approval per leaf.
+3. **Vote** — holders call `cast_approval(...)` on UTC days 5–9 (voting closes at 00:00 UTC on the 10th); one approval per leaf.
 4. **Finalize** — anyone calls `finalize()` after the 10th; quorum + strict majority decide.
 5. **Activate** — anyone calls `activate()` on/after the 15th; the winner becomes governance's maintainer (and seats their own council there).
 6. **Migrate** — if the subnet changed, anyone calls `end_transition()` after 182 days to flip the governing netuid.

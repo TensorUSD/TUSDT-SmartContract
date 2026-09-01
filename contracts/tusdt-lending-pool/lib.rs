@@ -90,8 +90,9 @@ mod lending_pool {
     }
 
     /// Resets the lToken exchange rate to 1.0 once the market has fully
-    /// drained (`total_supplied == 0`). The exchange rate only ever grows in
-    /// `accrue_interest`, so without this reset the next genesis supply (which
+    /// drained (`total_supplied == 0`). The exchange rate grows in
+    /// `accrue_interest` and `charge_prepaid_hour`, so without this reset the
+    /// next genesis supply (which
     /// mints 1:1 at the empty-market branch) would be credited at the stale
     /// grown rate — the new supplier's lTokens would claim more underlying
     /// than they deposited, leaving the pool short. The borrow index is left
@@ -719,9 +720,9 @@ mod lending_pool {
     ///
     /// Variant groups:
     /// - **Access**: `NotGovernance`, `NotGovernanceOrPlatform`, `NotMaintainer`, `ContractPaused`, `Reentrancy`
-    /// - **Amounts & liquidity**: `ZeroAmount`, `LiquidityInsufficient`, `MintBelowPrecision`, `InsufficientLTokenBalance`, `SupplyCapExceeded`, `BorrowCapExceeded`, `BorrowHealthExceeded`, `RepayAmountTooHigh`
-    /// - **Alpha collateral**: `UnapprovedNetuid`, `NetuidHasPositions`, `InsufficientCollateral`, `InsufficientAvailableStake`, `StakeTransferFailed`, `ChainExtensionFailed`, `NoAlphaStakeFound`, `TooManyNetuids`
-    /// - **Pricing & health**: `OracleCallFailed`, `OraclePriceUnavailable`, `OraclePriceStale`, `HealthFactorBelowThreshold`, `NotLiquidatable`, `InvalidCollateralNetuid`, `InvalidDebtMarket`, `CloseFactorExceeded`, `CollateralAwardExceedsPosition`
+    /// - **Amounts & liquidity**: `ZeroAmount`, `LiquidityInsufficient`, `MintBelowPrecision`, `InsufficientLTokenBalance`, `SupplyCapExceeded`, `BorrowCapExceeded`, `BorrowHealthExceeded`, `RepayAmountTooHigh` (reserved — never constructed, kept for ABI compat)
+    /// - **Alpha collateral**: `UnapprovedNetuid`, `NetuidHasPositions`, `InsufficientCollateral`, `InsufficientAvailableStake`, `StakeTransferFailed`, `ChainExtensionFailed`, `NoAlphaStakeFound` (reserved — never constructed, kept for ABI compat), `TooManyNetuids`
+    /// - **Pricing & health**: `OracleCallFailed`, `OraclePriceUnavailable`, `OraclePriceStale`, `HealthFactorBelowThreshold`, `NotLiquidatable`, `InvalidCollateralNetuid`, `InvalidDebtMarket`, `CloseFactorExceeded` (reserved — never constructed, kept for ABI compat), `CollateralAwardExceedsPosition` (reserved — never constructed, kept for ABI compat)
     /// - **Params / timelock**: `InvalidRatio`, `InvalidParam`, `NoPendingMarketParamsUpdate`, `NoPendingAlphaParamsUpdate`, `NoPendingGlobalParamsUpdate`, `ParamsUpdateTimelockActive`
     /// - **Cross-contract**: `TokenContractCallFailed`, `TokenTransferFromFailed`, `LTokenCallFailed`, `TransferFailed`
     /// - **General**: `MarketNotFound`, `PositionNotFound`, `ArithmeticError`
@@ -743,6 +744,7 @@ mod lending_pool {
         SupplyCapExceeded,
         BorrowCapExceeded,
         BorrowHealthExceeded,
+        // Reserved — never constructed (kept for ABI compat).
         RepayAmountTooHigh,
 
         // ── Alpha collateral ──
@@ -752,6 +754,7 @@ mod lending_pool {
         InsufficientAvailableStake,
         StakeTransferFailed,
         ChainExtensionFailed,
+        // Reserved — never constructed (kept for ABI compat).
         NoAlphaStakeFound,
         TooManyNetuids,
 
@@ -763,7 +766,9 @@ mod lending_pool {
         NotLiquidatable,
         InvalidCollateralNetuid,
         InvalidDebtMarket,
+        // Reserved — never constructed (kept for ABI compat).
         CloseFactorExceeded,
+        // Reserved — never constructed (kept for ABI compat).
         CollateralAwardExceedsPosition,
 
         // ── Params / timelock ──
@@ -795,7 +800,7 @@ mod lending_pool {
         ///
         /// Spawns two lToken children (lTAO and lTUSDT) using the provided `ltoken_code_hash`
         /// (which should be the `tusdt-erc20` code hash). The deployer becomes the initial
-        /// governance and platform.
+        /// governance, platform, and maintainer.
         #[ink(constructor)]
         pub fn new(
             treasury: AccountId,
@@ -1720,10 +1725,8 @@ mod lending_pool {
                     pos.scaled_debt,
                 )
             };
-            // A partial repayment below one borrow-index unit computes zero
-            // scaled units: it would decrement total_debt while the position's
-            // debt stays put, leaking that amount from the market total.
-            // Reject it instead.
+            // Defensive guard — unreachable under ceil scaling: any positive
+            // repayment credits at least one scaled unit (checked_div_value_ceil).
             if scaled_repaid == 0 {
                 self.set_idle();
                 return Err(Error::ZeroAmount);
@@ -1824,10 +1827,8 @@ mod lending_pool {
                     pos.scaled_debt,
                 )
             };
-            // A partial repayment below one borrow-index unit computes zero
-            // scaled units: it would decrement total_debt while the position's
-            // debt stays put, leaking that amount from the market total.
-            // Reject it instead.
+            // Defensive guard — unreachable under ceil scaling: any positive
+            // repayment credits at least one scaled unit (checked_div_value_ceil).
             if scaled_repaid == 0 {
                 self.set_idle();
                 return Err(Error::ZeroAmount);

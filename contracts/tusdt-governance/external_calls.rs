@@ -1,6 +1,6 @@
-// Cross-contract forwarders: the governance contract drives the vault, auction, and oracle by
-// calling their `governance`-gated messages. After deployment those contracts' `governance` role
-// is this contract, so to them the caller of each forwarded call is `governance` and their own
+// Cross-contract forwarders: the governance contract drives the vault, auction, oracle, and lending
+// pool by calling their `governance`-gated messages. After deployment those contracts' `governance`
+// role is this contract, so to them the caller of each forwarded call is `governance` and their own
 // `ensure_governance()` checks pass unchanged — no changes are needed on the callee side.
 //
 // Authorization is decided *here*, inside governance: `ensure_maintainer` for governing/config

@@ -32,7 +32,7 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Group:** Access
 
-**Returned by:** `update_pool_hotkey` (message), `ensure_governance` (helper), `ensure_governance_or_platform` (helper)
+**Returned by:** `pause` (message), `ensure_governance` (helper), `ensure_governance_or_platform` (helper)
 
 **Client guidance:** Authorization: only governance or the platform may call.
 
@@ -42,7 +42,7 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Group:** Access
 
-**Returned by:** `cancel_alpha_params_update` (message), `cancel_market_params_update` (message), `claim_surplus_tusdt` (message), `execute_global_params_update` (message), `execute_market_params_update` (message), `pause` (message), `unpause` (message), `update_oracle_address` (message), `update_platform` (message), `update_treasury` (message), `ensure_governance_or_platform` (helper), `ensure_maintainer` (helper)
+**Returned by:** `cancel_alpha_params_update` (message), `cancel_market_params_update` (message), `claim_surplus_tusdt` (message), `execute_global_params_update` (message), `execute_market_params_update` (message), `unpause` (message), `update_oracle_address` (message), `update_platform` (message), `update_treasury` (message), `update_pool_hotkey` (message), `ensure_governance_or_platform` (helper), `ensure_maintainer` (helper)
 
 **Client guidance:** Authorization: only the maintainer may call.
 
@@ -242,7 +242,7 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Group:** Pricing & health
 
-**Returned by:** `get_collateral_value_tusdt` (message), `get_oracle_price` (helper), `market_cash` (helper)
+**Returned by:** `get_collateral_value_tusdt` (helper), `get_oracle_price` (helper), `market_cash` (helper)
 
 **Client guidance:** State error: no price available - wait for a fresh oracle submission and retry.
 
@@ -252,7 +252,7 @@ Idle-TAO root-subnet staking (`set_root_stake_config`, `sweep`) adds **no new va
 
 **Group:** Pricing & health
 
-**Returned by:** `get_collateral_value_tusdt` (message), `get_oracle_price` (helper), `market_cash` (helper)
+**Returned by:** `get_collateral_value_tusdt` (helper), `get_oracle_price` (helper), `market_cash` (helper)
 
 **Client guidance:** State error: the price is older than the max age - wait for a fresh submission and retry.
 
@@ -342,7 +342,7 @@ redesign. If it appears on-chain, treat it as an unexpected contract bug.
 
 **Group:** Params / timelock
 
-**Returned by:** `cancel_alpha_params_update` (message), `cancel_market_params_update` (message), `is_liquidatable` (message), `set_global_params` (message), `set_market_params` (message), `set_root_stake_config` (message), `alpha_params_from_config` (helper), `global_params_from_config` (helper), `interest_params_from_config` (helper), `validate_alpha_params` (helper), `validate_interest_params` (helper)
+**Returned by:** `cancel_alpha_params_update` (message), `cancel_market_params_update` (message), `is_liquidatable` (helper), `set_global_params` (message), `set_market_params` (message), `set_root_stake_config` (message), `alpha_params_from_config` (helper), `global_params_from_config` (helper), `interest_params_from_config` (helper), `validate_alpha_params` (helper), `validate_interest_params` (helper)
 
 **Client guidance:** Input error: a parameter failed validation - fix it and resubmit.
 
@@ -432,7 +432,7 @@ redesign. If it appears on-chain, treat it as an unexpected contract bug.
 
 **Group:** General
 
-**Returned by:** `borrow_tao` (message), `borrow_tusdt` (message), `cancel_alpha_params_update` (message), `claim_reserve` (message), `get_collateral_value_tusdt` (message), `get_debt_value_tusdt` (message), `liquidate` (message), `repay_tao` (message), `repay_tusdt` (message), `set_market_params` (message), `supply_tao` (message), `supply_tusdt` (message), `update_ltoken_address` (message), `update_oracle_address` (message), `withdraw_tao` (message), `withdraw_tusdt` (message), `accrue_interest` (helper), `div_ratio` (helper), `effective_alpha` (helper), `ensure_approved_netuid` (helper), `market_cash` (helper), `max_liquidation_threshold_for_user` (helper), `min_collateral_factor_for_user` (helper)
+**Returned by:** `borrow_tao` (message), `borrow_tusdt` (message), `cancel_alpha_params_update` (message), `claim_reserve` (message), `get_collateral_value_tusdt` (helper), `get_debt_value_tusdt` (helper), `liquidate` (message), `repay_tao` (message), `repay_tusdt` (message), `set_market_params` (message), `supply_tao` (message), `supply_tusdt` (message), `update_ltoken_address` (message), `update_oracle_address` (message), `withdraw_tao` (message), `withdraw_tusdt` (message), `accrue_interest` (helper), `div_ratio` (helper), `effective_alpha` (helper), `ensure_approved_netuid` (helper), `market_cash` (helper), `max_liquidation_threshold_for_user` (helper), `min_collateral_factor_for_user` (helper)
 
 **Client guidance:** Input error: unknown market id - query the supported markets and retry.
 
@@ -452,6 +452,6 @@ redesign. If it appears on-chain, treat it as an unexpected contract bug.
 
 **Group:** General
 
-**Returned by:** `borrow_tao` (message), `borrow_tusdt` (message), `cancel_alpha_params_update` (message), `cancel_market_params_update` (message), `claim_alpha_excess` (message), `claim_reserve` (message), `deposit_alpha` (message), `get_available_borrow_tusdt` (message), `get_collateral_value_tusdt` (message), `get_debt_value_tusdt` (message), `get_health_factor` (message), `is_liquidatable` (message), `liquidate` (message), `repay_tao` (message), `repay_tusdt` (message), `set_alpha_params` (message), `set_approved_netuid` (message), `set_global_params` (message), `set_market_params` (message), `supply_tao` (message), `supply_tusdt` (message), `transfer_native_to_treasury` (message), `withdraw_alpha` (message), `withdraw_tao` (message), `withdraw_tusdt` (message), `accrue_interest` (helper), `alpha_price_rao_to_ratio` (helper), `collateral_price` (helper), `div_ratio` (helper), `effective_alpha` (helper), `ensure_approved_netuid` (helper), `get_oracle_price` (helper), `interest_params_from_config` (helper), `market_cash` (helper), `max_liquidation_threshold_for_user` (helper), `min_collateral_factor_for_user` (helper), `validate_interest_params` (helper)
+**Returned by:** `borrow_tao` (message), `borrow_tusdt` (message), `cancel_alpha_params_update` (message), `cancel_market_params_update` (message), `claim_alpha_excess` (message), `claim_reserve` (message), `deposit_alpha` (message), `get_available_borrow_tusdt` (helper), `get_collateral_value_tusdt` (helper), `get_debt_value_tusdt` (helper), `get_health_factor` (helper), `is_liquidatable` (helper), `liquidate` (message), `repay_tao` (message), `repay_tusdt` (message), `set_alpha_params` (message), `set_approved_netuid` (message), `set_global_params` (message), `set_market_params` (message), `supply_tao` (message), `supply_tusdt` (message), `transfer_native_to_treasury` (message), `withdraw_alpha` (message), `withdraw_tao` (message), `withdraw_tusdt` (message), `accrue_interest` (helper), `alpha_price_rao_to_ratio` (helper), `collateral_price` (helper), `div_ratio` (helper), `effective_alpha` (helper), `ensure_approved_netuid` (helper), `get_oracle_price` (helper), `interest_params_from_config` (helper), `market_cash` (helper), `max_liquidation_threshold_for_user` (helper), `min_collateral_factor_for_user` (helper), `validate_interest_params` (helper)
 
 **Client guidance:** Unexpected numeric error: report as a contract bug.

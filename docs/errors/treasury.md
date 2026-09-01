@@ -40,6 +40,6 @@ Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [
 
 > An arithmetic overflow or underflow occurred.
 
-**Returned by:** `release` (message), `allocate_to_funds` (helper)
+**Returned by:** `release` (message), `distribute` (message), `allocate_to_funds` (helper)
 
 **Client guidance:** Unexpected numeric error: report as a contract bug.

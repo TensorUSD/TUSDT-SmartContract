@@ -253,8 +253,8 @@ impl TusdtLendingPool {
 
         /// Validates a basis-points alpha market config (collateral factor <
         /// liquidation threshold <= 10_000, liquidation fee <= 10_000 and
-        /// fee + threshold <= 10_000 so the platform's full cut always fits
-        /// within the liquidation surplus) and converts it to internal
+        /// fee + threshold <= 10_000 so the full fee fits at the liquidation
+        /// boundary) and converts it to internal
         /// Ratio-based params. Errors: `Error::InvalidParam`.
         pub(crate) fn alpha_params_from_config(
             config: AlphaMarketParamsConfig,
@@ -268,9 +268,9 @@ impl TusdtLendingPool {
             if config.liquidation_fee > 10_000 {
                 return Err(Error::InvalidParam);
             }
-            // Sane bound X < 1 − LT: with the fee below the liquidation room
-            // the platform receives its FULL cut (uncapped) on every
-            // liquidatable position and the liquidator still profits.
+            // fee < 1 − LT guarantees the full fee fits within the liquidation
+            // surplus at the boundary (HF = 1); deeper-underwater positions
+            // fall back to the surplus-share cap in full_seizure_split.
             let fee_room = config
                 .liquidation_fee
                 .checked_add(config.liquidation_threshold)

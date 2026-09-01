@@ -1,6 +1,6 @@
 # Oracle — the TUSDT/TAO price feed
 
-`tusdt-oracle` publishes the single **TUSDT/TAO price** that the whole protocol relies on: every vault instance and the lending pool read the same latest price for collateral valuation and liquidations. One feed, many consumers — like a **MakerDAO OSM/medianizer** (median-of-reporters with an oracle gap) crossed with **Aave's oracle interface** (a `get_latest_price` contract every money market queries), but with reporter access rooted in **Bittensor subnet neurons** instead of a fixed allowlist.
+`tusdt-oracle` publishes the single **TUSDT/TAO price** that the whole protocol relies on: every vault instance and the lending pool read the same latest price for collateral valuation and liquidations. One feed, many consumers — like a **MakerDAO OSM/medianizer** (median-of-reporters) crossed with **Aave's oracle interface** (a `get_latest_price` contract every money market queries), but with reporter access rooted in **Bittensor subnet neurons** instead of a fixed allowlist. There is no on-chain staleness gap in the oracle itself — freshness is enforced by the consumers (vault/pool `max_oracle_age_ms`).
 
 ## How it works
 

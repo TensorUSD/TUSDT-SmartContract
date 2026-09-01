@@ -174,7 +174,7 @@ mod oracle {
         InvalidHotkey,
         /// The caller's (coldkey, hotkey) pair is not registered in the governing subnet.
         NotRegisteredInSubnet,
-        /// The caller's subnet alpha stake is below the required minimum.
+        /// The caller's subnet alpha stake is at or below the required minimum.
         InsufficientStake,
         /// Chain extension call failed at the node level.
         ChainExtensionFailed,

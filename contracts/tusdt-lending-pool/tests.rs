@@ -415,9 +415,9 @@ fn alpha_params_rejects_cf_ge_lt() {
 
 #[ink::test]
 fn alpha_params_rejects_high_fee_above_liquidation_room() {
-    // The fee must leave liquidation room (fee + threshold <= 10_000) so the
-    // platform's full cut always fits within the surplus of a liquidatable
-    // position. With LT 60% the room is 40%; 45% exceeds it.
+    // The fee must leave liquidation room (fee + threshold <= 10_000) so the full fee fits
+    // within the liquidation surplus at the boundary; deeper-underwater positions fall back
+    // to the surplus-share cap in full_seizure_split. With LT 60% the room is 40%; 45% exceeds it.
     let config = AlphaMarketParamsConfig {
         collateral_factor: 5000,
         liquidation_threshold: 6000,

@@ -40,14 +40,14 @@ liquidatable ⇔ borrowed_token_balance > collateral_value / liquidation_ratio  
 The check is `>` (strict): sitting exactly at the limit is not liquidatable. Liquidation is **permissionless** — anyone may call `trigger_liquidation_auction(owner, vault_id)`, which unstakes *all* of the vault's alpha to native TAO (`remove_stake`, func 2) and opens an ascending-bid auction (see `tusdt-auction`). The auction's minimum bid includes the liquidation fee:
 
 ```text
-min_bid = debt × (1 + liquidation_fee)                       # fee default 11%
+min_bid = debt + floor(debt × liquidation_fee)               # fee default 11%
 ```
 
 **Fees.**
 
 - **Borrow & repay are free.** No fee of any kind; no interest.
 - **Transaction fee** (`transaction_fee`, default 0.3% = 30 bps): charged on the *collateral* (TAO side) only, at auction settlement — `transaction_fee × collateral_sold` goes to the treasury, the winner receives the remainder.
-- **Liquidation fee** (default 11%): folded into the auction `min_bid`; the winning bid is transferred to the vault, which **burns exactly the debt** (`debt_cleared = debt at trigger`). Any surplus TUSDT (winning bid − debt) stays in the vault as surplus, claimable by governance/platform via `claim_surplus_tusdt`.
+- **Liquidation fee** (default 11%): folded into the auction `min_bid`; the winning bid is transferred to the vault, which burns `debt_cleared = min(auction debt snapshot, current vault debt)` — the clamp means a borrower repaying mid-auction can't strand settlement (the snapshot is only burned down to what the vault still owes). The unburned difference (winning bid − debt_cleared) stays in the vault as surplus, claimable by governance/platform via `claim_surplus_tusdt`.
 - **Vault creation fee** (`vault_creation_fee`, default 5,000,000 rao = 0.005 TAO native): paid with `create_alpha_vault`; any excess value sent is refunded to the caller.
 
 **Liquidation safety gate.** `active_liquidation_count` tracks vaults in open liquidation auctions. While non-zero, three governance operations are blocked (`ActiveLiquidationsExist`): `claim_excess_alpha`, `set_vault_hotkey`, and `transfer_native_to_treasury` — native TAO from liquidation must stay in the contract until settlement.

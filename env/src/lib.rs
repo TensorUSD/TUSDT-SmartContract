@@ -8,13 +8,15 @@
 use parity_scale_codec::Compact;
 
 /// Custom ink! environment used by all tUSDT protocol contracts. Differs from `DefaultEnvironment`
-/// in using `Balance = u64`, `Timestamp = u64` (Unix epoch milliseconds), and `BlockNumber = u32`,
+/// in using `Balance = u64` (vs `u128`) and the custom chain extension,
 /// with an 18-function chain extension for Bittensor subnet operations.
 #[derive(Debug, Clone)]
 pub struct CustomEnvironment;
 
-/// Identifiers for each function in the chain extension at extension id `0x1000`, mapping 1:1
-/// to the function indices in `RuntimeReadWrite`.
+/// Identifiers for the chain extension at extension id `0x1000`, keyed by explicit function index.
+/// Covers functions 0-15 and 36; function 25 (`caller_transfer_stake`) has no variant here — it is
+/// invoked only through the generated `RuntimeReadWrite` trait method — so the enum does not map
+/// 1:1 to every function in the trait.
 pub enum FunctionId {
     /// Reads stake info for a (hotkey, coldkey, netuid) triplet (function 0).
     GetStakeInfoForHotkeyColdkeyNetuidV1 = 0,

@@ -27,7 +27,7 @@ mod governance {
         TusdtVaultAlphaRef, VaultContractParamsConfig, VaultGlobalParamsConfig,
     };
 
-    // Cross-contract forwarders that let governance drive the vault, auction, and oracle.
+    // Cross-contract forwarders that let governance drive the vault, auction, oracle, and lending pool.
     // `forward_*` helpers defined here.
     mod external_calls {
         include!("external_calls.rs");
@@ -183,8 +183,10 @@ mod governance {
         auction: TusdtAuctionRef,
         oracle: TusdtOracleRef,
         pool: TusdtLendingPoolRef,
-        /// The subnet whose alpha stake gates proposer eligibility. Bound to the elected maintainer
-        /// (the subnet they govern) — only the election contract changes it, via `TusdtGovernance::election_set_netuid`.
+        /// The governing subnet netuid: defaulted to `DEFAULT_NETUID` at construction and changed
+        /// only by the election contract via `election_set_netuid`. Exposed via `netuid()` and
+        /// included in the snapshot tuple returned to the election contract. It does not gate
+        /// proposer eligibility — proposals are council-only.
         netuid: u16,
         params: GovernanceParams,
         // Latest committed snapshot epoch; 0 means no snapshot has been submitted yet.
@@ -216,7 +218,7 @@ mod governance {
         coldkey: AccountId,
         hotkey: AccountId,
         support: bool,
-        /// Voting power added to the tally: `sqrt(SN113 alpha) * time-staked multiplier`.
+        /// Voting power added to the tally: `sqrt(snapshot alpha balance) * time-staked multiplier`.
         weight: u128,
     }
 
@@ -346,8 +348,10 @@ mod governance {
 
     impl TusdtGovernance {
         /// Initializes governance with an explicit `maintainer`, references to the treasury, vault,
-        /// auction, and oracle contracts, and default params. The maintainer is passed in (typically
-        /// the subnet owner) rather than defaulting to the deployer.
+        /// auction, and oracle contracts, and default params. The lending-pool reference is NOT
+        /// passed here — it starts at the zero account and is wired later via `update_pool_address`.
+        /// The maintainer is passed in (typically the subnet owner) rather than defaulting to the
+        /// deployer.
         ///
         /// The election contract is **instantiated here** from `election_code_hash` and retained;
         /// it is authorized to install maintainers (`elect_maintainer`) and apply netuid switches
@@ -389,7 +393,8 @@ mod governance {
         /// Builds the storage struct from the addresses of the already-deployed peer contracts. Used
         /// by `new` (after it instantiates the election) and by unit tests (which can't instantiate
         /// cross-contracts, so they pass a stand-in `election` address that `ensure_election` checks
-        /// against). All refs are reconstructed from their `AccountId` via `FromAccountId`.
+        /// against). The pool ref is not passed in — it starts at the zero account and is wired via
+        /// `update_pool_address`. All refs are reconstructed from their `AccountId` via `FromAccountId`.
         pub(crate) fn from_addresses(
             treasury_address: AccountId,
             vault_address: AccountId,
@@ -423,7 +428,8 @@ mod governance {
             self.maintainer
         }
 
-        /// Returns the governing subnet netuid (bound to the maintainer; set only by the election).
+        /// Returns the governing subnet netuid. Set only by the election contract: unchanged on
+        /// same-subnet `elect_maintainer`, switched via `end_transition` after a cross-subnet winner.
         #[ink(message)]
         pub fn netuid(&self) -> u16 {
             self.netuid
