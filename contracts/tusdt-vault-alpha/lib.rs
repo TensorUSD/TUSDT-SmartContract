@@ -60,7 +60,7 @@ mod vault {
         pub collateral_ratio: Ratio,
         /// Collateralization ratio below which the vault is liquidatable.
         pub liquidation_ratio: Ratio,
-        /// Fee charged on the collateral sold during liquidation.
+        /// Fee added to the minimum bid at liquidation auction (default 11%).
         pub liquidation_fee: Ratio,
     }
 
@@ -866,7 +866,7 @@ mod vault {
         }
 
         /// Pauses the contract, blocking deposits, borrowing, repayments, collateral
-        /// operations, liquidation triggers, and interest accrual.
+        /// operations, and liquidation triggers.
         /// Callable by governance or platform (emergency halt).
         #[ink(message)]
         pub fn pause(&mut self) -> Result<()> {
@@ -1037,7 +1037,8 @@ mod vault {
             Ok(())
         }
 
-        /// Transfers the vault contract's entire native TAO balance to the treasury.
+        /// Transfers the vault contract's entire native TAO balance (reserving the
+        /// existential deposit) to the treasury.
         /// Governance only. Reverts if any liquidation auction is active (native TAO
         /// from liquidation must remain in the contract until settlement).
         ///
@@ -1387,7 +1388,9 @@ mod vault {
         }
 
         /// Settles a finalized liquidation auction, transferring collateral to the winner,
-        /// routing accrued interest to the treasury, and burning only principal.
+        /// burning the debt cleared (`min(auction.debt_balance, vault.borrowed_token_balance)`),
+        /// transferring the collateral (net of transaction fee) to the winning bidder, and leaving
+        /// any unburned bid surplus (`winning_bid - debt_cleared`) in the vault as settlement surplus.
         #[ink(message)]
         pub fn settle_liquidation_auction(
             &mut self,
@@ -1443,7 +1446,8 @@ mod vault {
             if winner_collateral > 0 && self.env().transfer(winner, winner_collateral).is_err() {
                 return Err(Error::TransferFailed);
             }
-            // Burn the full winning bid (all principal — no interest split).
+            // Burn only the debt cleared (all principal — no interest split); the unburned
+            // remainder of the bid stays in the vault as settlement surplus.
             self.token
                 .burn(self.env().account_id(), debt_cleared)
                 .map_err(|_| Error::TransferFailed)?;
@@ -1568,7 +1572,7 @@ mod vault {
             self.total_collateral_balance
         }
 
-        /// Returns the total debt accrued by an owner across all their vaults.
+        /// Returns the total borrowed token debt of an owner across all their vaults.
         #[ink(message)]
         pub fn get_total_debt(&self, owner: AccountId) -> Balance {
             self.owner_total_debt.get(owner).unwrap_or_default()
@@ -1687,7 +1691,7 @@ mod vault {
         ///
         /// Combines two sources:
         /// 1. TUSDT/TAO from the oracle contract
-        /// 2. Alpha/TAO from the chain extension (`get_alpha_price`, scaled by 1e9)
+        /// 2. Alpha price in TAO, rao-scaled (`get_alpha_price`)
         ///
         /// Formula: `tusdt_per_alpha = tusdt_per_tao × (alpha_price_rao / 1_000_000_000)`
         pub(crate) fn current_collateral_price(&self, netuid: u16) -> Result<Ratio> {
@@ -1699,7 +1703,7 @@ mod vault {
             )?;
             let tusdt_per_tao = price_data.price;
 
-            // Alpha per TAO from chain extension (RAO per alpha, 1 TAO = 1e9 RAO)
+            // TAO per alpha — alpha price in RAO (1 TAO = 1e9 RAO)
             let alpha_price_rao = self
                 .env()
                 .extension()
@@ -1751,7 +1755,6 @@ mod vault {
             Ok(())
         }
 
-        /// Applies a repayment amount to a vault's debt, splitting it into principal
         /// Calculates the transaction fee on a given amount using the global
         /// `transaction_fee` ratio (Balance = u64, fee in rao units).
         /// Only used during auction settlement.

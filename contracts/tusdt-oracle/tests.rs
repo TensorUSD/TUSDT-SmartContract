@@ -48,7 +48,7 @@ fn submit_price_with_metadata(
 // Chain-extension mock (shared `tusdt_test_support::MockExtension`, oracle knobs)
 // ---------------------------------------------------------------------------
 
-/// Default stake returned by the mock, above the 1e12 minimum threshold.
+/// Default stake returned by the mock, above the default 10_000_000_000 rao (10 TAO) minimum threshold.
 const MOCK_STAKE_ABOVE_THRESHOLD: u64 = 2_000_000_000_000;
 
 /// Register a mock that reports a registered neuron with stake above the minimum.
@@ -77,7 +77,7 @@ fn register_failing_extension() {
 }
 
 // ========================================================================
-// Existing tests — updated for subnet-based authorization
+// Subnet-based authorization tests
 // ========================================================================
 
 #[ink::test]
@@ -551,7 +551,7 @@ fn validator_commit_within_deviation_succeeds() {
 
     set_caller(accounts.bob);
     oracle.commit_round(Some(Ratio::from_integer(100))).expect("first commit should succeed");
-    // 5% default deviation: 104 is within 95..=105.
+    // 10% default deviation (1,000 bps): 104 is within 90..=110.
     assert!(oracle.commit_round(Some(Ratio::from_integer(104))).is_ok());
 }
 
@@ -672,7 +672,7 @@ fn set_max_price_deviation_requires_governance() {
 }
 
 // ========================================================================
-// New tests — subnet-based authorization
+// Subnet-based authorization tests (continued)
 // ========================================================================
 
 #[ink::test]

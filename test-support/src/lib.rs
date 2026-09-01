@@ -23,9 +23,8 @@
 //! The mock also simulates idle TAO root-subnet staking. Func 1 (`add_stake`) and
 //! func 2 (`remove_stake`) are no-op successes by default; with
 //! [`MockExtension::with_stateful_root_stake`] (or [`register_mock_stateful_root`])
-//! they decode `(hotkey, netuid, amount)` and move the off-chain callee's balance in
-//! and out of the simulated root stake, and func 36 (`get_stake_availability`)
-//! reports that simulated `root_stake` for netuid 0.
+//! they decode `(hotkey, netuid, amount)` and update the simulated root stake, and func 36
+//! (`get_stake_availability`) reports that simulated `root_stake` for netuid 0.
 
 // Test infrastructure is intentionally ergonomic: the workspace-wide panic-free lints
 // (unwrap/expect/indexing/arithmetic) would otherwise fight mock plumbing that is only
@@ -49,8 +48,8 @@ use ink::scale::Compact;
 /// [`MockExtension::subnet_stake`] (oracle/election behaviour), then fine-tune via the
 /// public knobs and the builder methods. The stateful root-stake mode
 /// ([`MockExtension::with_stateful_root_stake`], or the [`register_mock_stateful_root`]
-/// convenience) makes funcs 1/2 move the off-chain callee's balance in and out of a
-/// simulated root stake and makes func 36 report that stake for netuid 0. Install the
+/// convenience) makes funcs 1/2 update a simulated root stake and makes func 36 report that
+/// stake for netuid 0. Install the
 /// finished mock with [`register_extension`] (or one of the `register_mock_*`
 /// conveniences).
 pub struct MockExtension {
@@ -77,7 +76,7 @@ pub struct MockExtension {
     /// moved by funcs 1/2 when `move_balances` is enabled.
     pub root_stake: u64,
     /// When `true`, func 1 (`add_stake`) and func 2 (`remove_stake`) decode their
-    /// arguments and move the off-chain callee's balance in and out of `root_stake`;
+    /// arguments and update `root_stake`;
     /// func 36 then reports `root_stake` for netuid 0.
     pub move_balances: bool,
     /// When `true`, func 1 (`add_stake`) fails with status 2 (`WriteFailed`).
@@ -146,9 +145,8 @@ impl MockExtension {
     }
 
     /// Builder knob: simulate stateful idle TAO root-subnet staking. Enables
-    /// `move_balances` and initialises `root_stake` to `initial`; funcs 1/2 then move
-    /// the off-chain callee's balance in and out of the simulated root stake and func 36
-    /// reports it for netuid 0.
+    /// `move_balances` and initialises `root_stake` to `initial`; funcs 1/2 then track the
+    /// simulated root stake and func 36 reports it for netuid 0.
     pub fn with_stateful_root_stake(mut self, initial: u64) -> Self {
         self.move_balances = true;
         self.root_stake = initial;
@@ -329,7 +327,7 @@ pub fn set_callee_balance(account: AccountId, balance: u64) {
     );
 }
 
-/// Sets the off-chain test caller (and callee) to `caller`.
+/// Sets the off-chain test caller to `caller` (the callee is re-set to the contract's account).
 pub fn set_caller(caller: AccountId) {
     let callee = ink::env::account_id::<tusdt_env::CustomEnvironment>();
     ink::env::test::set_callee::<tusdt_env::CustomEnvironment>(callee);

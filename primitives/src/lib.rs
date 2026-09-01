@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 //! Shared primitive types for the tUSDT protocol. Provides the `Ratio` fixed-point arithmetic
 //! type (wrapping `FixedU128`) for basis-point and percentage calculations, together with
-//! exponential / power functions for the vault's discrete hourly compounding model, and a set of
+//! exponential / power functions for the lending pool's discrete hourly compounding model, and a set of
 //! time-constant definitions used throughout the protocol.
 
 use sp_arithmetic::fixed_point::FixedPointNumber;
@@ -30,7 +30,7 @@ const BASIS_POINTS_DENOMINATOR: u128 = 10_000;
 
 /// A fixed-point ratio wrapping `FixedU128` for on-chain arithmetic. Supports basis-point and
 /// percentage conversion, checked multiplication/division, and exponential/power operations for
-/// the vault's hourly compounding model.
+/// the lending pool's hourly compounding model.
 ///
 /// Stores the raw `FixedU128` inner value at the 18-decimal fixed-point scale (`1e18`), so an
 /// inner value of `1_000_000_000_000_000_000` corresponds to `1.0` — see `Ratio::from_inner`.
@@ -142,7 +142,7 @@ impl Ratio {
         rounded.checked_div(self.0)
     }
 
-    /// Divides this `Ratio` by a `u128` integer (`self / rhs`). Returns `None` on overflow.
+    /// Divides this `Ratio` by a `u128` integer (`self / rhs`). Returns `None` on overflow or division by zero.
     pub fn checked_div_int(self, rhs: u128) -> Option<Self> {
         let rhs_fixed = FixedU128::checked_from_integer(rhs)?;
         self.as_fixed().checked_div(&rhs_fixed).map(Self::from_fixed)

@@ -42,7 +42,7 @@ Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [
 
 *(no doc comment in source)*
 
-**Returned by:** `set_council` (message), `update_treasury_address` (message)
+**Returned by:** `set_council` (message)
 
 **Client guidance:** Input error: the council set is invalid (wrong size / duplicates); the maintainer must submit a valid council.
 

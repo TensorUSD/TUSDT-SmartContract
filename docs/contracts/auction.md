@@ -27,13 +27,13 @@ The contract is **controller-gated**: only the vault contract can create auction
 **Where the money goes** (vault-side settlement):
 
 ```text
-winner receives      = collateral_sold − transaction_fee        # native TAO
-treasury receives    = transaction_fee × collateral_sold        # native TAO (default 0.3%)
-debt burned          = debt_balance at trigger                  # TUSDT
-surplus TUSDT        = winning_bid − debt_balance               # stays in vault → treasury
+winner receives      = collateral_sold − transaction_fee          # native TAO
+treasury receives    = transaction_fee × collateral_sold          # native TAO (default 0.3%)
+debt burned          = min(debt_balance, current vault debt)      # TUSDT, clamped at settlement
+surplus TUSDT        = winning_bid − debt_cleared                 # stays in vault → treasury
 ```
 
-The full winning bid is transferred to the vault, which burns exactly the auction's `debt_balance`; anything above that (at minimum the liquidation fee, since bids start at `debt × 1.11`) remains as TUSDT surplus in the vault, claimable by governance via `claim_surplus_tusdt`.
+The full winning bid is transferred to the vault, which burns `debt_cleared = min(debt_balance, current vault debt)` — the clamp means a borrower repaying mid-auction can't strand settlement. The unburned difference (winning bid − debt_cleared) remains as TUSDT surplus in the vault, claimable by governance via `claim_surplus_tusdt`.
 
 ## User flow
 
@@ -58,7 +58,7 @@ The full winning bid is transferred to the vault, which burns exactly the auctio
 ## Talks to
 
 - **tusdt-erc20**: `transfer_from` (bidder → auction) on every bid; `transfer` for winning-bid payout and refunds.
-- **tusdt-vault-alpha (controller)**: creates auctions (`create_auction`), reads them (`get_auction`), and pulls the winning bid (`transfer_winning_bid`). Governance hand-off via `update_governance` / `set_controller`.
+- **tusdt-vault-alpha (controller)**: creates auctions (`create_auction`), reads them (`get_auction`), and pulls the winning bid (`transfer_winning_bid`). As the controller it also drives the governance hand-off via `update_governance` (controller-only — the governance contract never calls it).
 - **tusdt-governance**: updates `admin` (`set_admin`) and the controller during upgrades (`set_controller`).
 
 ## Errors

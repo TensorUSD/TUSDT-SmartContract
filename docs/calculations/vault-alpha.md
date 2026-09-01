@@ -28,7 +28,7 @@ The contract works entirely in integer rao and floors at every step
 
 ## 1. Pricing: how much is my alpha worth?
 
-Two price sources are multiplied (`current_collateral_price`, lib.rs:1676):
+Two price sources are multiplied (`current_collateral_price`, lib.rs:1693):
 
 ```text
 price per alpha (TUSDT) = oracle (TUSDT/TAO) × alpha price (TAO/alpha)
@@ -87,9 +87,10 @@ headroom = 460 − 300 = 160 TUSDT
 | Liquidation limit | see below | 575 TUSDT |
 
 > **Exact on-chain math**: 690 ÷ 1.5 = 460 is exact even in rao. A floored case
-> (test-pinned, `tests.rs:457`): with price 1.0 and 1,000 rao of collateral,
-> `max_borrow = 1000 / 1.5 = 666.67 → 666` — the 0.67 rao is discarded. Same for
-> `100 / 3 = 33.33 → 33`.
+> (test-pinned, `max_borrow_allowed_default_collateral_ratio`, tests.rs:457): with
+> price 1.0 and 1,000 rao of collateral, `max_borrow = 1000 / 1.5 = 666.67 → 666` —
+> the 0.67 rao is discarded. Same for `100 / 3 = 33.33 → 33`
+> (`max_borrow_allowed_rounds_down`, tests.rs:483).
 
 ## 3. When does liquidation happen?
 
@@ -139,9 +140,9 @@ The check re-reads the oracle on every call — a stale price older than
 `max_oracle_age_ms` (30 min default) makes the trigger revert with `OraclePriceStale`.
 
 > **Exact on-chain math**: the limit is floored, so the boundary can land one rao apart
-> (test-pinned, `tests.rs:511`): a position worth 1,000,000 rao with LR 120% has
-> `limit = 833,333`; debt 833,333 → safe, debt 833,334 → liquidatable. One rao flips
-> the vault.
+> (test-pinned, `is_liquidatable_boundary`, tests.rs:511): with price 1.0 and 1,000
+> collateral, the default LR 120% gives `limit = floor(1000 / 1.2) = 833`; debt 833 →
+> safe, debt 834 → liquidatable. One rao flips the vault.
 
 ## 4. The liquidation auction, step by step
 
@@ -150,7 +151,7 @@ Anyone may call `trigger_liquidation_auction(owner, vault_id)` (permissionless; 
 Suppose the oracle crashes to 90 TUSDT/TAO and the alpha price has fallen to
 0.0024 TAO/alpha — Alice's vault is now liquidatable.
 
-**Step 1 — trigger** (lib.rs:1306): the vault unstakes **all** 1,000 alpha via
+**Step 1 — trigger** (lib.rs:1315): the vault unstakes **all** 1,000 alpha via
 `remove_stake` (ext fn 2) and reads the native TAO actually received from the balance
 delta:
 

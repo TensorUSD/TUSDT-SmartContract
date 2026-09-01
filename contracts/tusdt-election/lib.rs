@@ -2,7 +2,7 @@
 #![allow(clippy::type_complexity)]
 
 //! A 2-year maintainer election contract with Merkle-snapshot approval voting and cross-subnet
-//! transition support. Runs a quadrennial election cycle for the protocol's maintainer authority,
+//! transition support. Runs a biennial election cycle for the protocol's maintainer authority,
 //! driven by a governance electorate snapshot with quadratic time-staked-weighted voting power.
 
 pub use self::election::{
@@ -42,9 +42,10 @@ mod election {
 
     /// Milliseconds in one day; base unit for the election cadence constants.
     pub(crate) const MS_PER_DAY: u64 = tusdt_voting::MS_PER_DAY;
-    /// One term ≈ 2 years. The exact "5th of the month" alignment is preserved by recomputing the
-    /// next-election anchor from `genesis_election_ts + term_index * TERM_LENGTH_MS` each cycle
-    /// (no ms drift accumulates); the day-of-month vote/activation gates re-align the calendar.
+    /// One term ≈ 2 years. The next-election anchor is recomputed from
+    /// `genesis_election_ts + term_index * TERM_LENGTH_MS` each cycle (no ms drift accumulates);
+    /// 730-day increments shift the anchor's day-of-month across leap cycles, so the calendar
+    /// alignment is approximate — the day-of-month vote/activation gates re-align it each cycle.
     pub(crate) const TERM_LENGTH_MS: u64 = 730 * MS_PER_DAY;
     /// Day-of-month (UTC) on which voting opens (the 5th).
     pub(crate) const VOTE_OPEN_DAY: u8 = 5;
@@ -208,7 +209,7 @@ mod election {
     // Events                                                                                       //
     // ------------------------------------------------------------------------------------------- //
 
-    /// Emitted when a new election cycle is opened by `schedule_election`(TusdtElection::schedule_election).
+    /// Emitted when a new election cycle is opened by [`schedule_election`](TusdtElection::schedule_election).
     #[ink(event)]
     pub struct ElectionScheduled {
         /// The new cycle's identifier (monotonically increasing).
@@ -486,13 +487,13 @@ mod election {
         }
 
         /// Raw (snapshot-frozen) alpha balance that has voted; measured against
-        /// `quorum()`(TusdtElection::quorum).
+        /// [`quorum()`](TusdtElection::quorum).
         #[ink(message)]
         pub fn total_voted_balance(&self) -> u128 {
             self.total_voted_balance
         }
 
-        /// The turnout quorum threshold for the current cycle: `circulating_supply * QUORUM_BPS`.
+        /// The turnout quorum threshold for the current cycle: `circulating_supply * QUORUM_BPS / 10_000`.
         /// Returns 0 when no electorate snapshot is recorded.
         #[ink(message)]
         pub fn quorum(&self) -> u128 {
@@ -612,8 +613,8 @@ mod election {
         /// second `cast_approval` from the same leaf — for any candidate — is rejected.
         ///
         /// The first vote of the cycle, cast on/after the `VOTE_OPEN_DAY` (the 5th), moves the cycle from
-        /// `Registration` to `Voting` and starts the 5-day calendar window (fixed to the 5th–10th of
-        /// the month) from that vote.
+        /// `Registration` to `Voting` and opens the calendar-fixed voting window, which always closes at
+        /// 00:00 UTC on the 10th (its length depends on when the first vote lands).
         #[ink(message)]
         pub fn cast_approval(
             &mut self,
@@ -787,7 +788,7 @@ mod election {
         /// maintainer seats their own council on governance afterward. If the winner governs a
         /// different subnet, opens a 6-month transition during which the previous subnet stays
         /// authoritative and the netuid switch is deferred to
-        /// `end_transition()`(TusdtElection::end_transition).
+        /// [`end_transition()`](TusdtElection::end_transition).
         #[ink(message)]
         pub fn activate(&mut self) -> Result<()> {
             if self.phase != Phase::Elected {

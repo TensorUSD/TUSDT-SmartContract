@@ -112,7 +112,7 @@ CI gate: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -
 
 ## Test infrastructure (`test-support/`)
 
-The off-chain chain-extension mock (`MockExtension` — function ids 0/15/36/25/2|5|6 plus
+The off-chain chain-extension mock (`MockExtension` — function ids 0/15/36/1/2/5|6/25 plus
 `register_mock*`/`set_caller` helpers) used to be copy-pasted into every contract's `tests.rs`.
 It now lives once in the `test-support` workspace crate and is wired as a dev-dependency of all 8
 contracts. When the chain extension gains a function id, update the mock **once**.
@@ -219,7 +219,7 @@ cargo contract upload \
 cargo contract instantiate \
   --manifest-path contracts/tusdt-vault-alpha/Cargo.toml \
   --constructor new \
-  --args <TREASURY_OR_PLACEHOLDER> <ERC20_CODE_HASH> <AUCTION_CODE_HASH> <ORACLE_CODE_HASH> <ORACLE_NETUID> <HOTKEY> <ALPHA_PRICE_NETUID> \
+  --args <TREASURY_OR_PLACEHOLDER> <ERC20_CODE_HASH> <AUCTION_CODE_HASH> <ORACLE_CODE_HASH> <ORACLE_NETUID> <HOTKEY> \
   --suri //Alice --url ws://127.0.0.1:9944
 ```
 
@@ -245,9 +245,11 @@ cargo contract instantiate \
 ```
 
 Prefer the `tools/` workflow above instead of using `cargo contract` for upload/deploy operations
-where a TS script already exists. The current e2e test suite is intentionally oracle-only, the only
-deployment script entrypoint is `vault:deploy`, and the treasury/governance/election contracts have
-no TS scripts yet — deploy and wire them with `cargo contract` as shown.
+where a TS script already exists. The e2e suite covers the oracle (`yarn test:oracle`) and lending
+pool liquidation (`yarn test:liquidation`); upload scripts exist for erc20, auction, oracle, vault,
+treasury, governance, and election (`yarn <name>:upload`, paired with `build:<name>-artifacts`),
+while `vault:deploy` is the only full deployment entrypoint — deploy and wire the rest with
+`cargo contract` as shown.
 
 ## Lending Pool
 
@@ -256,9 +258,9 @@ The lending pool (`tusdt-lending-pool`) is a standalone protocol contract that e
 - **Supply TAO/TUSDT** to earn variable yield (receive lTAO/lTUSDT receipt tokens)
 - **Supply Alpha collateral** (one market per approved subnet) to gain borrowing power
 - **Borrow TAO/TUSDT** against Alpha collateral with health factor checks
-- **Direct liquidation** when health factor drops below 1.0 (close factor 50%, configurable bonus,
-  full-close escape hatch below HF 0.95, seizure clamped to available collateral, residual bad
-  debt written off as a market deficit)
+- **Direct full-seizure liquidation** when health factor drops below 1.0 — repays the full debt on
+  both markets, seizes all alpha collateral (platform liquidation fee, default 5%), and writes off
+  any residual bad debt as a market deficit
 
 Source layout: the contract module is split into `lib.rs` (storage, events, messages, queries) plus
 `params.rs` (interest/alpha/global param structs + validation), `rates.rs` (interest accrual,
@@ -287,7 +289,9 @@ liquidation math).
 3. Read the spawned lToken addresses:
    - `pool.get_ltoken_address(0)` → lTAO
    - `pool.get_ltoken_address(1)` → lTUSDT
-4. Approve alpha markets: `pool.add_alpha_market(netuid, params)` for each target subnet.
+4. Approve alpha markets: `pool.set_approved_netuid(netuid, true)` (maintainer) for each target
+   subnet; per-subnet collateral params are configured separately via the timelocked
+   `set_alpha_params`.
 5. (Optional) Wire governance: `pool.update_governance(governance_address)`, then call
    `governance.update_pool_address(pool_address)` to record the pool in the governance contract.
 6. (Optional) Adjust interest rate params, alpha params, or global params via timelocked updates.
@@ -308,12 +312,12 @@ liquidation math).
    no burn. Interest accrues hourly while borrowed.
 5. **Withdraw collateral**: Only allowed when the account remains healthy after withdrawal. Uses
    chain extension func 6 (`transfer_stake`) to return stake to the user's coldkey.
-6. **Liquidate**: Permissionless. When `health_factor < 1.0`, any account can repay a portion of the
-   borrower's debt (up to 50% close factor; up to **100%** when the health factor is below
-   `full_close_hf_threshold`, default 0.95) and receive discounted alpha collateral (configurable
-   bonus, default 5%). The seizure clamps to the collateral that actually exists; if a liquidation
-   consumes all of it with debt remaining, the residual is written off as a frozen market deficit
-   (`DeficitReported`) that the maintainer can fund from the reserve via `cover_deficit`.
+6. **Liquidate**: Permissionless. When `health_factor < 1.0`, anyone can call `liquidate(borrower)`:
+   the liquidator repays the borrower's **full debt on both markets** (interest accrued first) and
+   receives the borrower's **entire alpha collateral**, minus the platform's liquidation fee
+   (default 5%, capped at the surplus share of the seized collateral). If the collateral cannot
+   cover the debt, the residual is written off as a frozen market deficit (`DeficitReported`) that
+   the maintainer can fund from the reserve via `cover_deficit`.
 
 ### Interest rate model
 
@@ -329,14 +333,12 @@ liquidation math).
 - **lToken exchange rate**: `underlying = ltoken_balance × exchange_rate`. Exchange rate starts at
   1.0 and grows monotonically as supplier interest accrues. Non-rebasing (Compound-style).
 
-### Alpha yield performance fee
+### Alpha yield sweep
 
 Alpha collateral continues earning native staking yield while supplied. A permissionless
-`claim_alpha_yield(netuid)` function:
-
-1. Computes excess = actual available stake − booked collateral (accounting for yield index).
-2. Splits 25% → treasury (unstaked to TAO via `remove_stake`, transferred as native TAO).
-3. Credits 75% → per-netuid yield index, proportionally increasing all borrowers' effective collateral.
+`claim_alpha_excess(netuid)` function unstakes the **full** excess (available stake per the chain
+extension − booked collateral) and transfers the proceeds to the treasury as native TAO. There is
+no yield index and no 25/75 split — the entire excess goes to the treasury.
 
 ### Default parameters
 
@@ -349,18 +351,18 @@ Alpha collateral continues earning native staking yield while supplied. A permis
 |---------------------|---------|
 | Collateral factor   | 50%     |
 | Liquidation threshold | 60%   |
-| Liquidation bonus   | 5%      |
+| Liquidation fee (platform cut) | 5% |
+| Alpha supply cap    | 0 (unlimited) |
 
 | Global param        | Default |
 |---------------------|---------|
-| Close factor        | 50%     |
-| Full-close HF threshold | 95%  |
-| Performance fee     | 25%     |
 | Max oracle age      | 30 min  |
+| Supply caps (TAO/TUSDT) | 0 (unlimited) |
+| Borrow caps (TAO/TUSDT) | 0 (unlimited) |
 
 ### Useful pool read methods
 
-- `get_market_state(market_id)` → `MarketState` (total_supplied, total_debt, borrow_index, exchange_rate, reserve_accrued)
+- `get_market_state(market_id)` → `MarketState` (total_supplied, total_scaled_debt, total_debt, borrow_index, exchange_rate, reserve_accrued, last_update)
 - `get_position(market_id, user)` → `Position` (ltoken_balance, scaled_debt, alpha_principal)
 - `get_exchange_rate(market_id)`, `get_borrow_index(market_id)`, `get_utilization(market_id)`
 - `get_borrow_rate(market_id)`, `get_supply_rate(market_id)` — current annualized rates
@@ -369,13 +371,16 @@ Alpha collateral continues earning native staking yield while supplied. A permis
 - `get_user_debt_details(market_id, user)` → `(debt, principal)` — debt includes accrued
   interest; `interest = debt − principal`. Principal is tracked in a dedicated mapping updated on
   borrow/repay/liquidate; positions created before principal tracking fall back to an estimate.
-- `get_collateral_value_tusdt(user)`, `get_debt_value_tusdt(user)`, `get_health_factor(user)`
-- `get_available_borrow_tusdt(user)` → remaining borrowing capacity in TUSDT
 - `get_alpha_markets()` → `Vec<(netuid, AlphaMarketParams)>` — list all approved alpha markets
 - `get_user_alpha_position(user, netuid)` → alpha principal for a specific subnet
-- `get_alpha_yield_index(netuid)`, `get_netuid_total_collateral(netuid)`
+- `get_netuid_total_collateral(netuid)`, `get_market_deficit(market_id)`
 - `paused()`, `governance()`, `treasury()`, `platform()`, `get_pool_hotkey()`, `get_oracle_address()`
 - Paginated: `get_positions(user, page)`, `get_all_positions(page)` (10 per page)
+
+> Health factor, borrow capacity, and collateral/debt value are computed by internal helpers
+> (`get_health_factor`, `get_available_borrow_tusdt`, `get_collateral_value_tusdt`,
+> `get_debt_value_tusdt`) — they are **not** `#[ink(message)]` queries, so they cannot be called
+> on-chain; clients derive them from the queryable market/position data.
 
 ### Governance forwarders
 
@@ -387,7 +392,6 @@ After wiring (`pool.update_governance(governance)`), the governance contract can
 | `pool_set_market_params(market, config)` / cancel | maintainer | Schedule timelocked interest rate changes |
 | `pool_set_alpha_params(netuid, config)` / cancel | maintainer | Schedule timelocked alpha param changes |
 | `pool_set_global_params(config)` / cancel | maintainer | Schedule timelocked global param changes |
-| `pool_pause` | council | Emergency halt (single member) |
 | `pool_unpause` | maintainer | Resume operations |
 | `pool_update_pool_hotkey(new_hotkey, netuids)` | maintainer | Migrate alpha stake to new hotkey |
 
@@ -407,21 +411,18 @@ All param changes follow the 24h timelock: schedule (governance) → execute (pe
    stake (0.002 TAO equivalent); failures revert cleanly with `StakeTransferFailed`.
 3. User borrows token: `borrow_token(vault_id, amount)`.
 4. User repays token: `repay_token(vault_id, amount)`.
-5. Anyone can trigger debt accrual: `accrue_interest(owner, vault_id)`.
-6. User adds more alpha collateral: `add_alpha_collateral(vault_id, amount)` — pulls exactly
+5. User adds more alpha collateral: `add_alpha_collateral(vault_id, amount)` — pulls exactly
    `amount` from the caller, same mechanism as vault creation.
-7. User releases alpha collateral: `release_alpha_collateral(vault_id, amount, dest_coldkey)` — returns stake via chain extension.
+6. User releases alpha collateral: `release_alpha_collateral(vault_id, amount, dest_coldkey)` — returns stake via chain extension.
 
 Deposit messages are EOA-facing: a contract calling the vault would pull its own stake, since the
 chain extension forwards the immediate caller's origin.
 
 ### 2) Interest model
 
-- Accrual is hour-based.
-- The configured `interest_rate` is an APR-style annual rate, not a simple yearly charge.
-- Growth model uses discrete hourly compounding from that annual rate.
-- At the default `5%` APR, the effective annualized cost is approximately `5.13%` APY under hourly compounding.
-- Implementation compounds by elapsed full hours and advances `last_interest_accrued_at` to the last fully accrued hour.
+The vault charges **no interest**: the borrowed amount equals the debt at all times and
+repayments are 1:1. Hourly-compounding interest exists only in the [lending pool](#lending-pool) —
+the vault's `borrow_token` mints exactly `amount` and `repay_token` burns exactly `amount`.
 
 ### 3) Liquidation flow
 
@@ -440,24 +441,27 @@ them through governance's forwarders rather than calling the protocol contracts 
 
 Risk params split into two scopes, both applied behind a 24h timelock:
 
-- **Per-netuid** — governance schedules `set_contract_params(netuid, params)` per subnet. Params:
-  `collateral_ratio`, `liquidation_ratio`, `interest_rate`, `liquidation_fee` (all basis points).
+- **Per-netuid** — governance schedules `set_contract_params(netuid, params)` per subnet (after
+  hand-off via the `vault_set_contract_params` forwarder). Params:
+  `collateral_ratio`, `liquidation_ratio`, `liquidation_fee` (all basis points).
   Falls back to defaults for unconfigured netuids.
-- **Global (all netuids)** — governance schedules `set_global_params(config)`. Params:
-  `transaction_fee` (basis points), `auction_duration_ms`, `max_oracle_age_ms`.
+- **Global (all netuids)** — governance schedules `set_global_params(config)` (after hand-off via
+  the `vault_set_global_params` forwarder). Params:
+  `transaction_fee` (basis points), `auction_duration_ms`, `max_oracle_age_ms`,
+  `vault_creation_fee` (native TAO in rao).
 
 Governance also controls which subnets are accepted via `set_approved_netuid(netuid, approved)`
 (exposed after hand-off through the `vault_set_approved_netuid` forwarder).
 
-Oracle reporter access (`set_reporter`) is managed by the oracle's validator; the validator and the
-max price deviation are governance-set. The active round is committed by the validator via
-`commit_round`; governance can also commit an emergency override price (see below).
+Oracle reporting is permissionless: any registered neuron of the oracle's subnet (stake above the
+minimum) may `submit_price` for the open round. The validator and the max price deviation are
+governance-set. The active round is committed by the validator via `commit_round`; governance can
+also commit an emergency override price (see below).
 
 Default per-netuid params:
 
 - Collateral ratio: `150%`
 - Liquidation ratio: `120%`
-- Interest rate: `10% APR` (approximately `10.52% APY` under hourly compounding)
 - Liquidation fee: `11%`
 
 Default global params:
@@ -465,6 +469,7 @@ Default global params:
 - Transaction fee: `0.3%` (30 bps)
 - Auction duration: `3_600_000` milliseconds (1 hour)
 - Max oracle age: `1_800_000` milliseconds (30 minutes)
+- Vault creation fee: `5_000_000` rao (0.005 TAO)
 
 ## Governance & Treasury
 
@@ -519,9 +524,8 @@ governance until `set_governance` hands control to the governance contract.
 ## Useful Read Methods
 
 - Vault: `get_vault`, `get_total_debt`, `get_contract_params(netuid)`, `get_global_params()`, `is_approved_netuid(netuid)`, `get_oracle_address`, `get_vaults`, `get_all_vaults`
-- Oracle: `get_latest_price`, `get_current_round_summary`, `is_reporter`
+- Oracle: `get_latest_price`, `get_current_round_summary`, `get_round_price`, `get_price_history`, `get_price_history_count`, `get_round_submissions`
 - Chain extension: `get_alpha_price(netuid)` — on-chain subnet alpha/TAO price (RAO-scaled by 1e9)
-- Oracle: `get_latest_price`, `get_current_round_summary`, `is_reporter`
 - Auction: `get_auction`, `get_active_vault_auction`, `get_bid`, `get_all_auctions`, `get_active_auctions`
 - Token: `balance_of`, `allowance`, `total_supply`
 - Governance: `maintainer`, `election`, `netuid`, `council`, `is_council`, `params`, `current_epoch`, `get_snapshot`, `quorum`, `proposal_count`, `get_proposal`, `has_voted`
@@ -540,5 +544,5 @@ governance until `set_governance` hands control to the governance contract.
 - Protocol fees accrue to `tusdt-treasury`; only `tusdt-governance` can release them.
 - After wiring, the vault/auction/oracle/pool are governed by `tusdt-governance`; the maintainer and
   council act through its forwarders rather than calling those contracts directly.
-- The lending pool uses direct bonus-based liquidation (not auctions). The existing `tusdt-auction`
-  contract serves the vault's liquidation path only.
+- The lending pool uses direct full-seizure liquidation with a platform fee (not auctions). The
+  existing `tusdt-auction` contract serves the vault's liquidation path only.

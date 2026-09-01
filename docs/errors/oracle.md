@@ -88,7 +88,7 @@ Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [
 
 > Round contains no submissions, so a median cannot be computed.
 
-**Returned by:** `commit_round` (message), `compute_round_median` (helper)
+**Returned by:** `commit_round` (message), `commit_round_governance` (message), `compute_round_median` (helper)
 
 **Client guidance:** No submissions in the round to compute a median: report if submissions exist on-chain.
 
@@ -112,6 +112,6 @@ Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [
 
 > Arithmetic overflow or underflow.
 
-**Returned by:** `submit_price` (message), `compute_round_median` (helper), `ensure_within_deviation` (helper), `finalize_round` (helper)
+**Returned by:** `submit_price` (message), `commit_round_governance` (message), `compute_round_median` (helper), `ensure_within_deviation` (helper), `finalize_round` (helper)
 
 **Client guidance:** Unexpected numeric error: report as a contract bug.

@@ -18,7 +18,7 @@ Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [
 
 > The caller is not the current incumbent maintainer.
 
-**Returned by:** `advance_cadence` (helper), `ensure_incumbent` (helper)
+**Returned by:** `ensure_incumbent` (helper)
 
 **Client guidance:** Authorization: only the current incumbent maintainer may call.
 
@@ -106,7 +106,7 @@ Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [
 
 > The chain extension call to query stake information failed.
 
-**Returned by:** `ensure_incumbent` (helper), `read_candidate_stake` (helper)
+**Returned by:** `read_candidate_stake` (helper)
 
 **Client guidance:** Chain-extension failure: retry (may be transient); report if persistent.
 
@@ -114,7 +114,7 @@ Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [
 
 > No electorate snapshot has been committed for the current cycle.
 
-**Returned by:** `cast_approval` (message), `gov_latest_snapshot` (helper), `read_candidate_stake` (helper)
+**Returned by:** `cast_approval` (message), `gov_latest_snapshot` (helper)
 
 **Client guidance:** State error: wait for the council to commit the electorate snapshot.
 
@@ -130,7 +130,7 @@ Fieldless `Error` enum: each variant encodes as a single `u8` SCALE index. See [
 
 > The computed voting power is zero; the leaf has no stake.
 
-**Returned by:** `cast_approval` (message), `ensure_incumbent` (helper), `read_candidate_stake` (helper)
+**Returned by:** `cast_approval` (message), `read_candidate_stake` (helper)
 
 **Client guidance:** Eligibility: the leaf has zero voting power.
 

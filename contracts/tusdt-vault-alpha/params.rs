@@ -28,7 +28,7 @@ impl TusdtVaultAlpha {
     }
 
     /// Converts a validated ratio to basis points. Validated ratios are capped
-    /// at 1_000_000% (100_000_000 bps), far below the u32 range, so this is
+    /// at 100_000% (10,000,000 bps), far below the u32 range, so this is
     /// infallible — the fallback exists only to keep the conversion panic-free.
     fn validated_ratio_to_bps(ratio: Ratio) -> u32 {
         // bps = inner / 1e18 * 10_000 = inner / 1e14
@@ -63,13 +63,13 @@ impl TusdtVaultAlpha {
 
     /// Validates per-netuid contract parameters.
     ///
-    /// - `collateral_ratio` must be in [100%, 1_000_000%] and strictly greater than `liquidation_ratio`
-    /// - `liquidation_ratio` must be in [100%, 1_000_000%]
+    /// - `collateral_ratio` must be in [100%, 100_000%] and strictly greater than `liquidation_ratio`
+    /// - `liquidation_ratio` must be in [100%, 100_000%]
     /// - `liquidation_fee` must be <= 100%
     pub(crate) fn validate_contract_params(params: &VaultContractParams) -> Result<()> {
         let one = Ratio::one();
         // Upper bound prevents panic in to_basis_points() which fails above ~429,496%.
-        // 1_000_000% (10,000,000 bps) is a safe ceiling well below the conversion limit.
+        // 100_000% (10,000,000 bps) is a safe ceiling well below the conversion limit.
         let max_ratio = Ratio::from_basis_points(10_000_000);
         if params.collateral_ratio < one || params.collateral_ratio > max_ratio {
             return Err(Error::InvalidRatio);
