@@ -89,6 +89,22 @@ mod lending_pool {
             .and_then(|v| Balance::try_from(v).ok())
     }
 
+    /// Supplier-withdrawable face liquidity: min(raw cash, total_supplied x
+    /// exchange_rate); mirrors the withdraw guard (underlying <= market_cash)
+    /// — reserve_accrued is NOT subtracted (reserve is protocol profit,
+    /// claimable via claim_reserve, never a withdraw deduction).
+    pub(crate) fn compute_available_liquidity(
+        cash: Balance,
+        total_supplied: Balance,
+        exchange_rate: Ratio,
+    ) -> Option<Balance> {
+        // checked_mul_value(value) computes value * self.
+        let face = exchange_rate
+            .checked_mul_value(total_supplied.into())
+            .and_then(|v| Balance::try_from(v).ok())?;
+        Some(cash.min(face))
+    }
+
     /// Resets the lToken exchange rate to 1.0 once the market has fully
     /// drained (`total_supplied == 0`). The exchange rate grows in
     /// `accrue_interest` and `charge_prepaid_hour`, so without this reset the
@@ -3343,6 +3359,19 @@ mod lending_pool {
                 return Some(Ratio::from_inner(0));
             }
             Ratio::from_integer(state.total_debt.into()).checked_div_int(total.into())
+        }
+
+        /// Returns the supplier-withdrawable face liquidity of a market
+        /// (`min(raw cash, total_supplied x exchange_rate)`, mirroring the
+        /// withdraw guard), or `None` if the market does not exist. The result
+        /// is in FACE units (rao — TAO for market 0, TUSDT for market 1), NOT
+        /// lToken units; note that `total_supplied` in `get_market_state` is
+        /// lToken-scaled, so clients must NOT display it as face.
+        #[ink(message)]
+        pub fn get_market_available_liquidity(&self, market_id: u8) -> Option<Balance> {
+            let state = self.markets.get(market_id)?;
+            let cash = self.market_cash(market_id).ok()?;
+            compute_available_liquidity(cash, state.total_supplied, state.exchange_rate)
         }
 
         /// Returns the booked TAO currently staked on the root subnet (netuid 0).

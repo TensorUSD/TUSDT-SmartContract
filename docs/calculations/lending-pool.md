@@ -212,6 +212,29 @@ Naive 0.64% × 1,200 × 30/365 = 0.631233 TAO matches exact 0.631399 TAO to 0.03
 the difference is hourly compounding and flooring.
 ```
 
+**Real incident — raw `total_supplied` shown as TAO.** Supplier D deposited 1 TAO
+into the TAO market (0) at a grown exchange rate
+`ER = 1_002_816_870_398_849_427` inner (≈ 1.002816870…); all amounts in rao. The
+pins are in tests.rs (`available_liquidity_is_supplier_face_capped_by_cash`,
+`last_supplier_redeem_is_face_minus_double_floor_dust`):
+
+| Step | Exact integer math | Result (rao) |
+|---|---|---|
+| D supplies | `1_000_000_000` paid in | mints `floor(1_000_000_000 × 1e18 / ER)` = `997_191_042` lTokens |
+| D's face claim | `floor(997_191_042 × ER / 1e18)` | `999_999_999` |
+| Pool cash at the snapshot | deposit + reserve accrued `1_447_510` | `1_001_447_510` |
+| Supplier-withdrawable liquidity | `min(1_001_447_510, 999_999_999)` | `999_999_999` |
+
+A UI rendering the raw `total_supplied` field showed **0.9972 TAO** supplied — but
+`997_191_042` is an **lToken count**, not a face balance: the true supplier claim is
+`999_999_999` rao (≈ 1.0 TAO), so the display understated liquidity by the
+exchange-rate factor. The withdraw guard is `underlying ≤ pool cash` only — the
+`1_447_510` reserve is protocol profit, never a deduction — so D withdraws the full
+face claim, and the available-liquidity view (`get_market_available_liquidity`) reads
+`min(cash, face) = 999_999_999`. The exit lands 1 rao short of the deposit (both mint
+and redeem floor — the double-floor dust of the ER-1.1 demo above); after
+`claim_reserve` takes the `1_447_510`, the pool is left holding exactly that 1 rao.
+
 ## 5. Health factor and how much you can borrow
 
 Collateral is alpha, valued at `effective_alpha = principal` (no yield index) ×

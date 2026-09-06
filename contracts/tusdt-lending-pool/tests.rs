@@ -864,6 +864,59 @@ fn exchange_rate_resets_when_market_fully_drains() {
 }
 
 #[ink::test]
+fn available_liquidity_is_supplier_face_capped_by_cash() {
+    // Real-chain pins: ER_inner = 1.002816870398849427, D ltao = 997_191_042,
+    // D face claim = 999_999_999, market 0 free cash = 1_001_447_510,
+    // reserve_accrued = 1_447_510 (protocol profit, not a withdraw deduction).
+    let rate = Ratio::from_inner(1_002_816_870_398_849_427);
+    // cash (1_001_447_510) > face (999_999_999): liquidity is the face claim,
+    // even with the reserve sitting unclaimed in cash.
+    assert_eq!(
+        compute_available_liquidity(1_001_447_510, 997_191_042, rate),
+        Some(999_999_999)
+    );
+    // cash (900_000_000) < face: liquidity is capped by raw cash.
+    assert_eq!(
+        compute_available_liquidity(900_000_000, 997_191_042, rate),
+        Some(900_000_000)
+    );
+}
+
+#[ink::test]
+fn last_supplier_redeem_is_face_minus_double_floor_dust() {
+    // Last-supplier full-exit pin at the grown rate with the reserve
+    // unclaimed: the withdraw guard compares underlying to market cash only
+    // (never cash minus reserve), so the supplier exits for the full face
+    // value, short only the double-floor sub-rao dust (deposit 1e9 -> redeem
+    // 999_999_999, 1 rao short by design).
+    let rate = Ratio::from_inner(1_002_816_870_398_849_427);
+    let redeem = compute_redeem_amount(997_191_042, rate).unwrap();
+    assert_eq!(redeem, 999_999_999);
+    assert_eq!(compute_mint_amount(1_000_000_000, rate), Some(997_191_042));
+    // Withdraw guard holds: redeem <= raw market cash (reserve NOT deducted).
+    assert!(redeem <= 1_001_447_510);
+}
+
+#[ink::test]
+fn drain_reset_preserves_reserve_accrued() {
+    // The drained-market exchange-rate reset must only touch the rate: the
+    // reserve accrued while the market was active is protocol profit and must
+    // survive the reset untouched.
+    let mut state = MarketState {
+        total_supplied: 0,
+        total_debt: 0,
+        total_scaled_debt: 0,
+        borrow_index: Ratio::one(),
+        exchange_rate: Ratio::from_inner(1_002_816_870_398_849_427),
+        reserve_accrued: 1_447_510,
+        last_update: 0,
+    };
+    reset_exchange_rate_when_drained(&mut state);
+    assert_eq!(state.exchange_rate, Ratio::one());
+    assert_eq!(state.reserve_accrued, 1_447_510);
+}
+
+#[ink::test]
 fn exchange_rate_survives_debt_repayment_while_supplied() {
     // Utilization dropping to zero must NOT reset the exchange rate while any
     // supply remains: the accrued supplier value lives in the grown rate, and
