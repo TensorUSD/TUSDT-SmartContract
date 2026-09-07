@@ -115,27 +115,30 @@ impl TusdtLendingPool {
             Ok(min_factor)
         }
 
-    /// Splits a full-position liquidation into the liquidator's payment, the
-    /// platform's share of the seized collateral, and the residual deficit.
+    /// Splits a full-position liquidation into the liquidator's payment and
+    /// the platform's share of the seized collateral.
     ///
-    /// - `C > D` (collateral value exceeds the debt value): the liquidator
-    ///   pays exactly the debt `D`; the platform takes `min(fee, (C−D)/C)`
-    ///   of the collateral alpha — the fee, capped at the surplus share so
-    ///   the liquidator can never lose principal (no stuck band); no deficit.
-    /// - `C <= D` (underwater): the liquidator pays the full collateral value
-    ///   `C` (break-even, never a loss), the platform takes nothing, and the
-    ///   residual `D − C` is written off as a market deficit.
+    /// The liquidator always pays the borrower's ENTIRE debt `D` (both debt
+    /// markets, with accrued interest), so every liquidation fully clears the
+    /// borrower and the pool never books a deficit:
+    /// - `C > D` (collateral value exceeds the debt value): the platform
+    ///   takes `min(fee, (C−D)/C)` of the collateral alpha — the fee, capped
+    ///   at the surplus share so the liquidator keeps collateral worth at
+    ///   least the debt paid (profit = surplus, never a loss).
+    /// - `C <= D` (underwater): the platform takes nothing (no surplus to
+    ///   tax) and the liquidator receives the ENTIRE collateral alpha,
+    ///   accepting that it may be worth less than the full debt paid.
     ///
     /// The returned `platform_share` is a 1e18 ratio applied per-netuid to
-    /// the alpha principal. `payment_value` and `deficit_value` are in TUSDT
-    /// value (9-decimal) units. The share depends only on `C`, `D` and the
-    /// netuid's fee; the payment and deficit are the same for every netuid.
+    /// the alpha principal. `payment_value` is in TUSDT value (9-decimal)
+    /// units. The share depends only on `C`, `D` and the netuid's fee; the
+    /// payment is the same for every netuid.
     /// Errors: `Error::ArithmeticError`.
     pub(crate) fn full_seizure_split(
         collateral_value: Balance,
         debt_value: Balance,
         fee: Ratio,
-    ) -> Result<(Balance, Ratio, Balance)> {
+    ) -> Result<(Balance, Ratio)> {
         if collateral_value > debt_value {
             let surplus =
                 collateral_value.checked_sub(debt_value).ok_or(Error::ArithmeticError)?;
@@ -149,11 +152,9 @@ impl TusdtLendingPool {
             } else {
                 surplus_share
             };
-            Ok((debt_value, platform_share, 0))
+            Ok((debt_value, platform_share))
         } else {
-            let deficit =
-                debt_value.checked_sub(collateral_value).ok_or(Error::ArithmeticError)?;
-            Ok((collateral_value, Ratio::from_inner(0), deficit))
+            Ok((debt_value, Ratio::from_inner(0)))
         }
     }
 
