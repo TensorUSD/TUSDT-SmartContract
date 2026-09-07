@@ -1090,17 +1090,13 @@ fn claim_alpha_excess_rejects_unapproved_netuid() {
 }
 
 #[ink::test]
-fn reserve_claimable_never_touches_deficit_backing() {
-    // Deficit consumes the reserve entirely → nothing claimable.
-    assert_eq!(reserve_claimable(100_000_000, 200_000_000, 500_000_000), 0);
-    // Reserve above the deficit, capped by cash.
-    assert_eq!(reserve_claimable(1_000_000_000, 300_000_000, 500_000_000), 500_000_000);
-    // No deficit — the whole reserve is claimable, capped by cash.
-    assert_eq!(reserve_claimable(1_000_000_000, 0, 500_000_000), 500_000_000);
+fn reserve_claimable_is_the_reserve_capped_by_cash() {
     // Cash is the binding constraint.
-    assert_eq!(reserve_claimable(1_000_000_000, 0, 900_000_000), 900_000_000);
-    // With ample cash, exactly reserve − deficit is claimable.
-    assert_eq!(reserve_claimable(1_000_000_000, 300_000_000, 1_500_000_000), 700_000_000);
+    assert_eq!(reserve_claimable(1_000_000_000, 500_000_000), 500_000_000);
+    assert_eq!(reserve_claimable(1_000_000_000, 900_000_000), 900_000_000);
+    // Reserve below cash: the whole reserve is claimable.
+    assert_eq!(reserve_claimable(1_000_000_000, 1_500_000_000), 1_000_000_000);
+    assert_eq!(reserve_claimable(0, 500_000_000), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -2429,18 +2425,17 @@ fn health_factor_is_zero_without_collateral() {
 
 /// A healthy-but-liquidatable position (C = 125 TUSDT, D = 100 TUSDT at
 /// HF = 0.75): the liquidator pays exactly the debt, the platform takes its
-/// full 5% fee of the collateral, and there is no deficit. Platform value =
-/// 5% × 125 = 6.25 TUSDT; the liquidator keeps 118.75 TUSDT of collateral
-/// against a 100 TUSDT payment (+18.75% of debt).
+/// full 5% fee of the collateral. Platform value = 5% × 125 = 6.25 TUSDT;
+/// the liquidator keeps 118.75 TUSDT of collateral against a 100 TUSDT
+/// payment (+18.75% of debt).
 #[ink::test]
 fn full_seizure_split_healthy_pays_full_debt_with_fee() {
     let fee = Ratio::from_basis_points(500); // 5%
-    let (payment, platform_share, deficit) =
+    let (payment, platform_share) =
         TusdtLendingPool::full_seizure_split(125_000_000_000, 100_000_000_000, fee).unwrap();
 
     assert_eq!(payment, 100_000_000_000);
     assert_eq!(platform_share, Ratio::from_basis_points(500));
-    assert_eq!(deficit, 0);
 
     // The platform's share of the collateral is exactly 5% of 125 TUSDT.
     let platform_value = platform_share
@@ -2456,13 +2451,12 @@ fn full_seizure_split_healthy_pays_full_debt_with_fee() {
 #[ink::test]
 fn full_seizure_split_caps_fee_at_the_surplus_share() {
     let fee = Ratio::from_basis_points(500); // 5% — above the surplus share
-    let (payment, platform_share, deficit) =
+    let (payment, platform_share) =
         TusdtLendingPool::full_seizure_split(105_000_000_000, 100_000_000_000, fee).unwrap();
 
     assert_eq!(payment, 100_000_000_000);
     // floor(5e9 × 1e18 / 105e9) = 4.7619…%
     assert_eq!(platform_share, Ratio::from_inner(47_619_047_619_047_619));
-    assert_eq!(deficit, 0);
 
     // The liquidator's received value never falls below the debt: the
     // platform's cut is at most the surplus (5 TUSDT here).
@@ -2477,13 +2471,12 @@ fn full_seizure_split_caps_fee_at_the_surplus_share() {
 #[ink::test]
 fn full_seizure_split_caps_a_high_fee_to_the_surplus() {
     let fee = Ratio::from_basis_points(3000); // 30%
-    let (payment, platform_share, deficit) =
+    let (payment, platform_share) =
         TusdtLendingPool::full_seizure_split(125_000_000_000, 100_000_000_000, fee).unwrap();
 
     assert_eq!(payment, 100_000_000_000);
     // (125−100)/125 = 20% exactly.
     assert_eq!(platform_share, Ratio::from_inner(200_000_000_000_000_000));
-    assert_eq!(deficit, 0);
 }
 
 /// With collateral exactly equal to the debt there is no surplus, so the
@@ -2491,25 +2484,25 @@ fn full_seizure_split_caps_a_high_fee_to_the_surplus() {
 #[ink::test]
 fn full_seizure_split_exact_cover_has_no_surplus_share() {
     let fee = Ratio::from_basis_points(500);
-    let (payment, platform_share, deficit) =
+    let (payment, platform_share) =
         TusdtLendingPool::full_seizure_split(100_000_000_000, 100_000_000_000, fee).unwrap();
 
     assert_eq!(payment, 100_000_000_000);
     assert_eq!(platform_share, Ratio::from_inner(0));
-    assert_eq!(deficit, 0);
 }
 
-/// Underwater (C < D): the liquidator pays the collateral value (break-even,
-/// never a loss), the platform takes nothing, and the residual is a deficit.
+/// Underwater (C < D): the liquidator still pays the borrower's FULL debt
+/// (the pool is always repaid in full — no write-off, no deficit), the
+/// platform takes nothing, and the liquidator receives the entire collateral
+/// even though it is worth less than the debt paid.
 #[ink::test]
-fn full_seizure_split_underwater_breaks_even_and_reports_deficit() {
+fn full_seizure_split_underwater_pays_full_debt_without_platform_share() {
     let fee = Ratio::from_basis_points(500);
-    let (payment, platform_share, deficit) =
+    let (payment, platform_share) =
         TusdtLendingPool::full_seizure_split(80_000_000_000, 100_000_000_000, fee).unwrap();
 
-    assert_eq!(payment, 80_000_000_000);
+    assert_eq!(payment, 100_000_000_000);
     assert_eq!(platform_share, Ratio::from_inner(0));
-    assert_eq!(deficit, 20_000_000_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -2658,17 +2651,16 @@ fn prepaid_hour_makes_debt_exceed_principal_immediately() {
 }
 
 // ---------------------------------------------------------------------------
-// Liquidation: full-seizure split, bad-debt deficit
+// Liquidation: full-seizure split
 //
 // The `liquidate` message ends in cross-contract calls (oracle / ERC20 / chain
 // extension) that cannot run off-chain, so the new math is pinned at the pure
-// helper level (`full_seizure_split`) and at the bookkeeping level, and the
-// deficit flow is driven through the message that CAN run off-chain
-// (`cover_deficit`). End-to-end liquidation coverage lives in `tools/e2e`.
+// helper level (`full_seizure_split`); bookkeeping-level pins cover the scaled
+// lockstep retirement. End-to-end liquidation coverage lives in `tools/e2e`.
 // ---------------------------------------------------------------------------
 
-/// The native treasury sweep must never touch supplier face value, the accrued
-/// reserve, or an unfunded deficit — only cash above all committed claims.
+/// The native treasury sweep must never touch supplier face value or the accrued
+/// reserve — only cash above all committed claims.
 #[ink::test]
 fn treasury_sweep_never_touches_supplier_face_or_reserve() {
     let (mut pool, accounts) = setup();
@@ -2712,162 +2704,6 @@ fn treasury_sweep_returns_none_when_claims_exceed_balance() {
     );
 
     assert_eq!(pool.treasury_sweepable(), None);
-}
-
-/// An unfunded deficit is a committed claim: the sweep cannot take it.
-#[ink::test]
-fn treasury_sweep_nets_unfunded_deficit() {
-    let (mut pool, accounts) = setup();
-    set_caller(accounts.alice);
-    seed_pool_balance(5_000_000_000);
-    pool.debug_set_market_deficit(0, 3_000_000_000);
-
-    // 5 TAO − 3 TAO deficit − 1 TAO buffer − 1 ED guard.
-    assert_eq!(pool.treasury_sweepable(), Some(999_999_999));
-}
-
-/// `cover_deficit` funds the deficit from `reserve_accrued`, and a no-op when
-/// the reserve is empty or the deficit is gone.
-#[ink::test]
-fn cover_deficit_funds_from_reserve_until_exhausted() {
-    let (mut pool, accounts) = setup();
-    set_caller(accounts.alice); // maintainer = governance = alice in new_for_test
-
-    pool.debug_set_market_deficit(0, 600_000_000);
-    pool.debug_set_market_state(
-        0,
-        MarketState {
-            total_supplied: 0,
-            total_debt: 0,
-            total_scaled_debt: 0,
-            borrow_index: Ratio::one(),
-            exchange_rate: Ratio::one(),
-            reserve_accrued: 1_000_000_000,
-            last_update: 0,
-        },
-    );
-
-    // First cover: 600M deficit funded from 1 TAO reserve.
-    pool.cover_deficit(0).unwrap();
-    assert_eq!(pool.get_market_deficit(0), Some(0));
-    assert_eq!(pool.get_market_state(0).unwrap().reserve_accrued, 400_000_000);
-
-    // Nothing left to cover: no-op, state unchanged.
-    pool.cover_deficit(0).unwrap();
-    assert_eq!(pool.get_market_deficit(0), Some(0));
-    assert_eq!(pool.get_market_state(0).unwrap().reserve_accrued, 400_000_000);
-}
-
-/// A deficit larger than the reserve stays on the books as an unfunded shortfall.
-#[ink::test]
-fn cover_deficit_leaves_unfunded_remainder_when_reserve_is_short() {
-    let (mut pool, accounts) = setup();
-    set_caller(accounts.alice);
-
-    pool.debug_set_market_deficit(0, 600_000_000);
-    pool.debug_set_market_state(
-        0,
-        MarketState {
-            total_supplied: 0,
-            total_debt: 0,
-            total_scaled_debt: 0,
-            borrow_index: Ratio::one(),
-            exchange_rate: Ratio::one(),
-            reserve_accrued: 250_000_000,
-            last_update: 0,
-        },
-    );
-
-    pool.cover_deficit(0).unwrap();
-    assert_eq!(pool.get_market_deficit(0), Some(350_000_000));
-    assert_eq!(pool.get_market_state(0).unwrap().reserve_accrued, 0);
-}
-
-/// Covering a deficit is a maintainer decision, not permissionless.
-#[ink::test]
-fn cover_deficit_requires_maintainer() {
-    let (mut pool, accounts) = setup();
-    set_caller(accounts.bob); // not maintainer/governance
-
-    pool.debug_set_market_deficit(0, 100_000_000);
-    assert_eq!(pool.cover_deficit(0), Err(Error::NotMaintainer));
-}
-
-/// The deficit query returns `None` for an unknown market and the booked value
-/// for a known one.
-#[ink::test]
-fn get_market_deficit_reports_booked_deficits() {
-    let (pool, _accounts) = setup();
-    // No deficit booked on any market (fresh state) → None, same pattern as
-    // `get_alpha_params` for unconfigured netuids.
-    assert_eq!(pool.get_market_deficit(99), None);
-    assert_eq!(pool.get_market_deficit(0), None);
-
-    let (mut pool, _accounts) = setup();
-    pool.debug_set_market_deficit(0, 5_001_585_000);
-    assert_eq!(pool.get_market_deficit(0), Some(5_001_585_000));
-}
-
-/// Bookkeeping pin for the bad-debt write-off, mirroring the reproduction's
-/// final state: residual debt 5.001585 TUSDT at a 1.0 borrow index is removed
-/// from the scaled total (so another borrower's 4_998_415_000 scaled units are
-/// unaffected) and frozen as a deficit of exactly its face value.
-#[ink::test]
-fn bad_debt_write_off_bookkeeping_matches_the_repro() {
-    let index = Ratio::one();
-    let residual_scaled: u64 = 5_001_585_000; // the stranded TUSDT debt
-    let other_borrower_scaled: u64 = 4_998_415_000;
-    let total_scaled = residual_scaled + other_borrower_scaled;
-
-    // The write-off freezes the residual's face value as the deficit...
-    let deficit_face = scaled_debt_to_face(residual_scaled, index).unwrap();
-    assert_eq!(deficit_face, residual_scaled);
-
-    // ...and removes exactly the residual from the scaled total, so the
-    // remaining borrower's share and the derived face total are untouched.
-    let remaining_scaled = total_scaled - residual_scaled;
-    assert_eq!(remaining_scaled, other_borrower_scaled);
-    assert_eq!(
-        scaled_debt_to_face(remaining_scaled, index).unwrap(),
-        other_borrower_scaled
-    );
-}
-
-/// A written-off deficit must not poison utilization or rates: with the debt
-/// removed from the ledger, an hour of accrual produces zero interest and zero
-/// utilization even while the deficit counter is non-zero.
-#[ink::test]
-fn deficit_does_not_poison_utilization_or_rates() {
-    let (mut pool, accounts) = setup();
-    set_caller(accounts.alice);
-
-    // Market 0: debt fully written off, but a deficit remains on the books.
-    pool.debug_set_market_deficit(0, 5_001_585_000);
-    pool.debug_set_market_state(
-        0,
-        MarketState {
-            total_supplied: 1_000_000_000_000,
-            total_debt: 0,
-            total_scaled_debt: 0,
-            borrow_index: Ratio::one(),
-            exchange_rate: Ratio::one(),
-            reserve_accrued: 0,
-            last_update: 0,
-        },
-    );
-    seed_pool_balance(1_000_000_000_000);
-
-    ink::env::test::set_block_timestamp::<tusdt_env::CustomEnvironment>(
-        tusdt_primitives::MILLISECONDS_PER_HOUR + 1,
-    );
-    pool.accrue_interest(0).unwrap();
-
-    let state = pool.get_market_state(0).unwrap();
-    assert_eq!(state.total_debt, 0);
-    assert_eq!(state.borrow_index, Ratio::one());
-    // The deficit is untouched by accrual — it is frozen.
-    assert_eq!(pool.get_market_deficit(0), Some(5_001_585_000));
-    assert_eq!(pool.get_utilization(0), Some(Ratio::from_inner(0)));
 }
 
 

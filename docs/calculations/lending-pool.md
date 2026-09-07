@@ -12,7 +12,8 @@ the exact integer math the contract uses. Companion to the reference page
 > reproducing the pins in `tests.rs`: the rate-curve points, the live-chain borrow
 > index `1_000_316_946_018_546_683`, the mint/redeem tests, the liquidation
 > bookkeeping test (`index 1.4, scaled 3 → debt 4`), and the full-seizure split pins
-> (`C=125/D=100 → 5% share`, `C=105/D=100 → 4.7619% share`, `C=80/D=100 → deficit 20`).
+> (`C=125/D=100 → 5% share`, `C=105/D=100 → 4.7619% share`, `C=80/D=100 → pays the
+> full 100 debt, platform 0 — no deficit`).
 >
 > The health-factor functions (`get_health_factor`, `get_available_borrow_tusdt`,
 > `is_liquidatable`, value getters) are `pub` but **not** `#[ink(message)]` — not
@@ -285,14 +286,18 @@ The split is decided by the position totals — collateral value `C` (all netuid
 current prices) and debt value `D` (TAO debt + TUSDT debt at the oracle price):
 
 ```text
-C > D:   payment = D;  platform_share = min(fee, (C − D) / C)   per netuid
-C ≤ D:   payment = C;  platform_share = 0;  deficit = D − C     market deficit
+payment is always D (both markets, with accrued interest)
+C > D:   platform_share = min(fee, (C − D) / C)   per netuid
+C ≤ D:   platform_share = 0                       (no surplus to tax)
 ```
 
 The `min` cap at the surplus share is what guarantees the liquidator never loses
-principal: the platform's cut can never exceed the surplus, so the liquidator
-always keeps collateral worth at least `D` — break-even at worst. (The rounding
-remainder of the share also stays with the liquidator.)
+principal in the solvent branch: the platform's cut can never exceed the surplus,
+so the liquidator always keeps collateral worth at least `D` — break-even at worst.
+(The rounding remainder of the share also stays with the liquidator.) Underwater
+(`C ≤ D`) that guarantee cannot hold — the liquidator pays the full `D` and
+receives collateral worth only `C`, taking the value loss by design; the pool is
+repaid in full either way and no deficit is ever booked.
 
 Debt repayment: TAO market → the call must carry ≥ the covered TAO as `value`
 (excess refunded); TUSDT market → `transfer_from` (pre-approve the pool). The
@@ -301,7 +306,8 @@ seized alpha is transferred to the liquidator's coldkey under the pool hotkey
 per netuid. Bookkeeping subtracts the same scaled units from position and market
 total in lockstep; principal retires dollar-for-dollar; every alpha position is
 cleared. `Liquidated` reports `{user, liquidator, collateral_netuids,
-collateral_seized, platform_alpha, debt_covered_tao, debt_covered_tusdt, deficit}`.
+collateral_seized, platform_alpha, debt_covered_tao, debt_covered_tusdt}` — the
+`deficit` field was removed with the no-deficit redesign.
 
 **Boundary: where liquidation begins.** With 690 TUSDT collateral and 345 TUSDT
 debt, HF ≥ 1 requires `0.6 × (oracle × 0.003 × 1,000) ≥ 345`, i.e. oracle ≥
@@ -334,8 +340,10 @@ exact cover:  C = D = 100, fee 5%
   → liquidator break-even
 
 underwater:  C = 80, D = 100, fee 5%
-  payment = 80 (the collateral's worth);  platform_share = 0;  no surplus to tax
-  deficit = 100 − 80 = 20 → frozen as a market deficit (`DeficitReported`)
+  payment = 100 (the FULL debt, even though the collateral is worth only 80)
+  platform_share = 0;  liquidator receives the whole collateral (80 of value) for
+  100 paid → value loss 20 (by design)
+  NO deficit: D − C = 20 is not written off — the pool is repaid in full
 ```
 
 > **Exact rao note:** the share cap is computed in 1e18 inner — `floor(5e9 × 1e18 /
@@ -360,13 +368,14 @@ covered in the same call (payment = the full TAO debt as `value`), and every net
 with collateral is seized — there is no partial-close choice for the liquidator to
 make.
 
-**Bad-debt write-off.** The deficit path is the underwater branch above: when the
-collateral cannot cover the debt (`C ≤ D`), the liquidator pays only `C` and the
-residual `D − C` is written off — removed from the ledger (utilization and rates
-are not poisoned) and frozen as a market deficit that never compounds
-(`DeficitReported`; e.g. C = 80, D = 100 → deficit 20). The maintainer funds it
-from `reserve_accrued` via `cover_deficit`; a deficit larger than the reserve stays
-on the books as an unfunded shortfall (`get_market_deficit`).
+**No bad-debt write-off (removed).** Earlier designs let an underwater liquidation
+pay only the collateral value `C` and froze the residual `D − C` as a market
+deficit that the maintainer could cover from the reserve. That model no longer
+exists: every liquidation — solvent or underwater — repays the **full** debt `D`,
+so the pool is always repaid in full and no deficit is ever booked.
+`cover_deficit`, `get_market_deficit`, `DeficitReported`, and `DeficitCovered` are
+gone from the contract. The underwater branch's cost shows up as a value loss for
+the liquidator, never as a hole in the pool's books.
 
 **What the borrower must do.** At oracle 190, debt 345 TUSDT (no accrual), HF = 0.9913:
 
@@ -439,7 +448,7 @@ no `debt_market` argument, and seizes exactly the collateral that exists.
 | lTokens | mint `floor(amount / ER)`, redeem `floor(ltokens × ER)`; ER resets only on full drain |
 | Health factor | `maxLT × collateral_value / debt_value` — global, liquidatable ⇔ HF < 1.0 |
 | Borrow capacity | `floor(minCF × collateral) − debt` |
-| Liquidation | `liquidate(borrower)` pays the full debt on both markets; platform share per netuid = `min(fee, (C−D)/C)` (default fee 5%); underwater → pay `C`, deficit `D−C` → frozen market deficit (`cover_deficit` funds from reserve) |
+| Liquidation | `liquidate(borrower)` pays the full debt on both markets; platform share per netuid = `min(fee, (C−D)/C)` (default fee 5%); underwater → platform 0, liquidator pays the full debt and may take a value loss; no deficit, no write-off |
 | Params | TAO 0/4%/96%, TUSDT 0/3%/97%, optimal 80%, reserve 20%; CF 50%, LT 60%, liquidation fee 5% |
 
 Errors for these flows: `BorrowHealthExceeded`, `LiquidityInsufficient`,

@@ -12,16 +12,15 @@ import {
 } from "../src/interactions/oracle.js";
 import {
   borrowTusdt,
-  coverDeficit,
   deployLendingPool,
   deployTusdtAndGetCodeHash,
   depositAlpha,
   erc20Approve,
+  erc20BalanceOf,
   erc20Mint,
   expectOk,
   expectOption,
   liquidate,
-  queryMarketDeficit,
   queryMarketState,
   queryPosition,
   queryUserDebt,
@@ -50,22 +49,22 @@ const BORROW_TUSDT = 100_000n * TAO;
  * markets (with accrued interest) and seizes ALL alpha collateral across
  * every netuid, minus the platform's liquidation fee (per-netuid
  * `liquidation_fee`, default 5% of the collateral alpha, capped at the
- * surplus share so the liquidator never loses principal). When the collateral
- * cannot cover the debt, the liquidator pays the collateral value
- * (break-even), the platform gets nothing, and the residual is written off as
- * a frozen market deficit.
+ * surplus share so the liquidator never loses principal). Every liquidation
+ * — solvent or underwater — repays the pool in full: there is no write-off,
+ * no deficit, ever.
  *
  * The collateral subnet is ROOT (netuid 0): its alpha price is always 1.0
  * (swap-pallet root invariance), so no subnet registration is needed — the
  * only runtime prerequisites are hotkey Owner entries, root subtokens enabled,
  * and balances, all set up in `beforeAll`.
  *
- * Scenario B (borrower alice) exercises the UNDERWATER + DEFICIT path: at
- * oracle 60 her collateral is worth 1,400 × 60 = 84,000 TUSDT against a
- * ~100,000 TUSDT debt (health factor ~0.50). The liquidator pays the
- * collateral value (84,000 TUSDT, break-even), receives ALL 1,400 alpha (no
- * platform cut — there is no surplus), and the residual debt is written off
- * as a frozen market deficit.
+ * Scenario B (borrower alice) exercises the UNDERWATER path: at oracle 60 her
+ * collateral is worth 1,400 × 60 = 84,000 TUSDT against a ~100,000 TUSDT debt
+ * (health factor ~0.50). The liquidator still pays the FULL debt
+ * (~100,000 TUSDT) and receives ALL 1,400 alpha (no platform cut — there is
+ * no surplus), even though the collateral is worth less than the debt paid
+ * (the liquidator may take a value loss — by design). No deficit is booked:
+ * the pool is repaid in full.
  *
  * Scenario A (borrower charlie) exercises the HEALTHY-SIDE path: at oracle 100
  * her collateral is worth 140,000 TUSDT against a ~100,000 TUSDT debt
@@ -172,8 +171,9 @@ describe.sequential("tusdt-lending-pool liquidation flow", () => {
     expect(debt - BORROW_TUSDT).toBeLessThan(TAO); // a fraction of 1 TUSDT
   });
 
-  describe("scenario B — underwater full seizure + deficit at oracle 60 (alice)", () => {
+  describe("scenario B — underwater full-debt liquidation at oracle 60 (alice)", () => {
     let debtBefore: bigint;
+    let poolTusdtBefore: bigint;
 
     beforeAll(async () => {
       await commitPrice(60n * TAO);
@@ -181,53 +181,54 @@ describe.sequential("tusdt-lending-pool liquidation flow", () => {
         await queryUserDebt(pool, bob.address, DEBT_MARKET_TUSDT, alice.address),
         "get_user_debt(alice) @60",
       );
+      poolTusdtBefore = expectOk<bigint>(
+        await erc20BalanceOf(tusdt, bob.address, pool.address.toString()),
+        "pool TUSDT balance @60",
+      );
     }, 60_000);
 
-    it("seizes the whole underwater position at the collateral value", async () => {
+    it("pays the FULL debt for the underwater position and seizes all the alpha", async () => {
       const tx = await liquidate(api, pool, bob, alice.address);
 
       const liquidated = findEvent(tx, "Liquidated");
       expect(liquidated, "Liquidated event").toBeDefined();
-      const [user, liquidator, netuids, seized, platformAlpha, coveredTao, coveredTusdt, deficit] =
-        liquidated!.args as [
-          string,
-          string,
-          number[],
-          bigint,
-          bigint,
-          bigint,
-          bigint,
-          bigint,
-        ];
+      const [user, liquidator, netuids, seized, platformAlpha, coveredTao, coveredTusdt] =
+        liquidated!.args as [string, string, number[], bigint, bigint, bigint, bigint];
       expect(user).toBe(alice.address);
       expect(liquidator).toBe(bob.address);
       expect(netuids).toContain(ROOT_NETUID);
-      // Underwater: ALL alpha is seized, no platform cut (no surplus).
+      // Underwater: ALL alpha is seized, no platform cut (no surplus to tax).
       expect(seized).toBe(COLLATERAL_ALPHA);
       expect(platformAlpha).toBe(0n);
-      // Collateral value = 1,400 α × 60 TUSDT/α = 84,000 TUSDT, paid in full
-      // (the borrower has no TAO debt). The residual is the deficit.
+      // Full repayment even though C = 84,000 < D ≈ 100,000: the liquidator
+      // pays the borrower's entire TUSDT debt (the borrower has no TAO debt)
+      // and accepts the value loss — the pool never books a deficit.
       expect(coveredTao).toBe(0n);
-      expect(coveredTusdt).toBe(84_000n * TAO);
-      expect(deficit).toBeGreaterThan(debtBefore - 84_000n * TAO - TAO);
-      expect(deficit).toBeLessThan(debtBefore - 84_000n * TAO + TAO);
+      expect(coveredTusdt).toBeGreaterThan(debtBefore - TAO);
+      expect(coveredTusdt).toBeLessThan(debtBefore + TAO);
+      // No write-off machinery exists: no deficit events can fire.
+      expect(findEvent(tx, "DeficitReported")).toBeUndefined();
+      expect(findEvent(tx, "DeficitCovered")).toBeUndefined();
     });
 
-    it("books the residual debt as a frozen market deficit", async () => {
-      // The position is fully written off — the user debt reads zero and the
-      // deficit holds the uncollectible face value (D − C ≈ 16,000 TUSDT).
+    it("clears the borrower's debt and repays the pool in full", async () => {
+      // The position is fully closed — the user debt reads zero.
       const debtAfter = expectOk<bigint>(
         await queryUserDebt(pool, bob.address, DEBT_MARKET_TUSDT, alice.address),
         "get_user_debt(alice) after",
       );
       expect(debtAfter).toBe(0n);
 
-      const deficit = expectOption<bigint>(
-        await queryMarketDeficit(pool, bob.address, DEBT_MARKET_TUSDT),
-        "get_market_deficit(1)",
+      // The pool's TUSDT cash rose by ≈ the full debt: every rao of the
+      // underwater position was repaid, nothing was written off. (There is no
+      // get_market_deficit to read — deficits no longer exist.)
+      const poolTusdtAfter = expectOk<bigint>(
+        await erc20BalanceOf(tusdt, bob.address, pool.address.toString()),
+        "pool TUSDT balance after",
       );
-      expect(deficit).toBeGreaterThan(debtBefore - 84_000n * TAO - TAO);
-      expect(deficit).toBeLessThan(debtBefore - 84_000n * TAO + TAO);
+      const repaid = poolTusdtAfter - poolTusdtBefore;
+      expect(repaid).toBeGreaterThan(debtBefore - TAO);
+      expect(repaid).toBeLessThan(debtBefore + TAO);
     });
 
     it("empties the borrower's collateral position", async () => {
@@ -238,28 +239,8 @@ describe.sequential("tusdt-lending-pool liquidation flow", () => {
         await queryPosition(pool, bob.address, ALPHA_MARKET_ID, alice.address),
         "get_position(alpha, alice)",
       );
-      // Collateral exhausted → the liquidation wrote off the residual debt.
+      // Full seizure — nothing remains on the borrower.
       expect(pos?.alpha_principal ?? 0n).toBe(0n);
-    });
-
-    it("lets the maintainer cover the deficit from the reserve", async () => {
-      const deficitBefore = expectOption<bigint>(
-        await queryMarketDeficit(pool, alice.address, DEBT_MARKET_TUSDT),
-        "get_market_deficit(1)",
-      );
-      expect(deficitBefore).toBeGreaterThan(0n);
-
-      // cover_deficit is maintainer-gated; alice is the maintainer.
-      await coverDeficit(api, pool, alice, DEBT_MARKET_TUSDT);
-
-      const deficitAfter = expectOption<bigint>(
-        await queryMarketDeficit(pool, alice.address, DEBT_MARKET_TUSDT),
-        "get_market_deficit(1) after cover",
-      );
-      // The reserve (20% of the prepaid-hour premium) funded part of it.
-      expect(deficitAfter).toBeLessThan(deficitBefore!);
-      // Remember the post-cover remainder for scenario A's no-new-deficit check.
-      deficitFromScenarioB = deficitAfter ?? 0n;
     });
 
     it("pays the liquidator the seized alpha", async () => {
@@ -290,17 +271,8 @@ describe.sequential("tusdt-lending-pool liquidation flow", () => {
 
       const liquidated = findEvent(tx, "Liquidated");
       expect(liquidated, "Liquidated event").toBeDefined();
-      const [user, liquidator, netuids, seized, platformAlpha, coveredTao, coveredTusdt, deficit] =
-        liquidated!.args as [
-          string,
-          string,
-          number[],
-          bigint,
-          bigint,
-          bigint,
-          bigint,
-          bigint,
-        ];
+      const [user, liquidator, netuids, seized, platformAlpha, coveredTao, coveredTusdt] =
+        liquidated!.args as [string, string, number[], bigint, bigint, bigint, bigint];
       expect(user).toBe(charlie.address);
       expect(liquidator).toBe(bob.address);
       expect(netuids).toContain(ROOT_NETUID);
@@ -308,24 +280,22 @@ describe.sequential("tusdt-lending-pool liquidation flow", () => {
       // collateral is seized; the platform takes 5% of it (70 of 1,400 α).
       expect(coveredTao).toBe(0n);
       expect(coveredTusdt).toBe(debtBefore);
-      expect(deficit).toBe(0n);
       expect(seized).toBe(COLLATERAL_ALPHA);
       expect(platformAlpha).toBe((COLLATERAL_ALPHA * 5_000_000_000_000_000n) / 10n ** 18n);
+      // Solvent liquidation, fully repaid — no deficit machinery can fire.
+      expect(findEvent(tx, "DeficitReported")).toBeUndefined();
+      expect(findEvent(tx, "DeficitCovered")).toBeUndefined();
     });
 
-    it("leaves the borrower with zero debt and no new deficit", async () => {
+    it("leaves the borrower with zero debt — no deficit, ever", async () => {
       const debtAfter = expectOk<bigint>(
         await queryUserDebt(pool, bob.address, DEBT_MARKET_TUSDT, charlie.address),
         "get_user_debt(charlie) after",
       );
       expect(debtAfter).toBe(0n);
-
-      const deficit = expectOption<bigint>(
-        await queryMarketDeficit(pool, bob.address, DEBT_MARKET_TUSDT),
-        "get_market_deficit(1)",
-      );
-      // Whatever the pre-cover remainder was, this liquidation adds nothing.
-      expect(deficit).toBe(deficitFromScenarioB);
+      // No get_market_deficit to read: deficits no longer exist. The event
+      // assertions above already proved this liquidation repaid the pool in
+      // full and fired no DeficitReported / DeficitCovered events.
     });
 
     it("empties the borrower's collateral position", async () => {
@@ -369,13 +339,9 @@ describe.sequential("tusdt-lending-pool liquidation flow", () => {
       await queryMarketState(pool, bob.address, DEBT_MARKET_TUSDT),
       "get_market_state(1)",
     );
-    // Both borrowers' positions are fully cleared: alice's residual was
-    // written off into the deficit, charlie's was fully repaid.
+    // Both borrowers' positions are fully cleared — every liquidation repaid
+    // the pool in full; no deficit was ever booked.
     expect(state?.total_debt ?? 0n).toBe(0n);
     expect(state?.total_scaled_debt ?? 0n).toBe(0n);
   });
 });
-
-// Captured across describe blocks (module scope): the deficit amount after
-// scenario B's cover_deficit — scenario A must not add to it.
-let deficitFromScenarioB = 0n;

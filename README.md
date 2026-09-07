@@ -259,8 +259,8 @@ The lending pool (`tusdt-lending-pool`) is a standalone protocol contract that e
 - **Supply Alpha collateral** (one market per approved subnet) to gain borrowing power
 - **Borrow TAO/TUSDT** against Alpha collateral with health factor checks
 - **Direct full-seizure liquidation** when health factor drops below 1.0 — repays the full debt on
-  both markets, seizes all alpha collateral (platform liquidation fee, default 5%), and writes off
-  any residual bad debt as a market deficit
+  both markets, seizes all alpha collateral (platform liquidation fee, default 5%); no write-off
+  exists — even underwater liquidations repay the pool in full
 
 Source layout: the contract module is split into `lib.rs` (storage, events, messages, queries) plus
 `params.rs` (interest/alpha/global param structs + validation), `rates.rs` (interest accrual,
@@ -315,9 +315,10 @@ liquidation math).
 6. **Liquidate**: Permissionless. When `health_factor < 1.0`, anyone can call `liquidate(borrower)`:
    the liquidator repays the borrower's **full debt on both markets** (interest accrued first) and
    receives the borrower's **entire alpha collateral**, minus the platform's liquidation fee
-   (default 5%, capped at the surplus share of the seized collateral). If the collateral cannot
-   cover the debt, the residual is written off as a frozen market deficit (`DeficitReported`) that
-   the maintainer can fund from the reserve via `cover_deficit`.
+   (default 5%, capped at the surplus share of the seized collateral). When the collateral cannot
+   cover the debt (underwater), the platform's cut is waived and the liquidator still pays the full
+   debt, receiving all the collateral — a possible value loss, by design. No deficit is ever booked
+   and no write-off exists: the pool is always repaid in full.
 
 ### Interest rate model
 
@@ -373,7 +374,7 @@ no yield index and no 25/75 split — the entire excess goes to the treasury.
   borrow/repay/liquidate; positions created before principal tracking fall back to an estimate.
 - `get_alpha_markets()` → `Vec<(netuid, AlphaMarketParams)>` — list all approved alpha markets
 - `get_user_alpha_position(user, netuid)` → alpha principal for a specific subnet
-- `get_netuid_total_collateral(netuid)`, `get_market_deficit(market_id)`
+- `get_netuid_total_collateral(netuid)`
 - `paused()`, `governance()`, `treasury()`, `platform()`, `get_pool_hotkey()`, `get_oracle_address()`
 - Paginated: `get_positions(user, page)`, `get_all_positions(page)` (10 per page)
 

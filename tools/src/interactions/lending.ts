@@ -191,15 +191,6 @@ export async function liquidate(
   return txMessage(api, pool, "liquidate", signer, [borrower], value);
 }
 
-export async function coverDeficit(
-  api: ApiPromise,
-  pool: ContractPromise,
-  signer: KeyringPair,
-  marketId: number,
-) {
-  return txMessage(api, pool, "cover_deficit", signer, [marketId]);
-}
-
 export async function accrueMarketInterest(
   api: ApiPromise,
   pool: ContractPromise,
@@ -248,14 +239,6 @@ export async function queryPosition(
   user: string,
 ): Promise<ContractQueryResult> {
   return queryMessage(pool, "get_position", callerAddress, [marketId, user]);
-}
-
-export async function queryMarketDeficit(
-  pool: ContractPromise,
-  callerAddress: string,
-  marketId: number,
-): Promise<ContractQueryResult> {
-  return queryMessage(pool, "get_market_deficit", callerAddress, [marketId]);
 }
 
 export async function queryGlobalParams(

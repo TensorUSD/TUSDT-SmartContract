@@ -131,17 +131,21 @@ reserve_delta = debt_interest − supply_interest       # → reserve_accrued
 ```
 
 The reserve accumulates per market and anyone can send it to the treasury via permissionless
-`claim_reserve(market_id)` (capped at the market's free balance, never root stake).
+`claim_reserve(market_id)` (capped at the market's physical cash — `min(reserve_accrued,
+cash)` where `cash` is the free native balance above the root-staking liquidity sleeve for
+the TAO market and `market_cash` for the TUSDT market; never root stake). Because every
+liquidation repays the pool in full, nothing can outrank the treasury's claim on the
+reserve — the cap exists only because a claim can never take cash that is not there.
 
 The reserve is **not** a withdrawal deduction. The withdraw guard is only
 `underlying = floor(ltokens · exchange_rate) ≤ market_cash` (plus the root-staking
 top-up path) — `reserve_accrued` is never subtracted from the cash a withdrawal may
 take. The reserve is protocol profit (`debt_interest − supply_interest` at the 20%
-reserve factor) that leaves the pool only via `claim_reserve` or reallocation to an
-unfunded deficit by `cover_deficit`, and it is one of the market obligations that cap
-the treasury sweeps (see Idle TAO root-subnet staking). A pool free balance **above**
-the suppliers' total face value is therefore normal whenever `reserve_accrued > 0` or
-sub-rao rounding dust exists — it is the reserve (and dust), not leaked user funds.
+reserve factor) that leaves the pool only via `claim_reserve`, and it is one of the
+market obligations that cap the treasury sweeps (see Idle TAO root-subnet staking). A
+pool free balance **above** the suppliers' total face value is therefore normal whenever
+`reserve_accrued > 0` or sub-rao rounding dust exists — it is the reserve (and dust),
+not leaked user funds.
 
 ### Scaled debt
 
@@ -265,11 +269,9 @@ by the position totals — collateral value `C` (all netuids, at current prices)
 debt value `D` (TAO debt + TUSDT debt, converted at the oracle price):
 
 ```
-if C > D (solvent):    payment = D                    # the full debt
-                       platform_share = min(fee, (C − D) / C)   # per netuid
-if C ≤ D (underwater): payment = C                    # the collateral's worth
-                       platform_share = 0             # no surplus to tax
-                       deficit = D − C                # market deficit
+payment is always D:             # the FULL debt on both markets — solvent or underwater
+if C > D (solvent):    platform_share = min(fee, (C − D) / C)   # per netuid
+if C ≤ D (underwater): platform_share = 0                       # no surplus to tax
 ```
 
 `fee` is the netuid's `liquidation_fee` (default 500 bps = 5%). The cap at the
@@ -282,16 +284,15 @@ validated `fee + liquidation_threshold ≤ 100%` so it can never exceed the larg
 surplus a solvent-but-liquidatable position can have.
 
 **The underwater path.** When the collateral cannot cover the debt (`C ≤ D`), the
-liquidator pays only the collateral value `C` — split across the two debt markets
-by their share of the debt value, so the total never exceeds `C` — and the
-residual `D − C` is uncollectible. `liquidate` removes it from the ledger (so
-utilization and everyone's rates are not poisoned by phantom debt) and freezes it
-as a market **deficit** (`DeficitReported` event). A deficit is a face amount that
-**never compounds** — it is not multiplied by the borrow index again. The
-maintainer can fund it from `reserve_accrued` via `cover_deficit(market_id)` (the
-treasury's reserve claim absorbs the loss; a deficit larger than the reserve stays
-on the books as an unfunded shortfall). Read it with `get_market_deficit(market_id)`
-— `None` when nothing is booked.
+platform's fee is **waived** — there is no surplus to tax — and the liquidator
+receives **all** of the seized alpha, but still pays the **full debt** `D`. The
+liquidator may realize a value loss when the collateral is worth less than the debt
+paid (e.g. `C = 80, D = 100` → pays 100 for collateral worth 80): that is by
+design. The borrower is always fully cleared, so the pool is **always repaid in
+full — there is no write-off and no deficit, ever**. There are no `DeficitReported`
+/ `DeficitCovered` events and no `cover_deficit(market_id)` /
+`get_market_deficit(market_id)` messages; the reserve is never used to absorb a
+liquidation loss.
 
 Bookkeeping retires both markets' debt in scaled lockstep (position and market
 total lose the same scaled units; `debt_principal` retires dollar-for-dollar) and
@@ -303,7 +304,7 @@ picture:
 
 ```
 Liquidated { user, liquidator, collateral_netuids, collateral_seized,
-             platform_alpha, debt_covered_tao, debt_covered_tusdt, deficit }
+             platform_alpha, debt_covered_tao, debt_covered_tusdt }
 ```
 
 ### Alpha excess claim
@@ -413,14 +414,14 @@ beyond the free balance (via the top-up path above). TUSDT (market 1) is untouch
 buffer, force a root unstake, or move cash that is already committed to suppliers:
 
 - `claim_reserve(market_id)` — the interest reserve can be claimed only up to the market's
-  **free balance**; it never reaches into root stake.
+  physical cash (`min(reserve_accrued, cash)`); it never reaches into root stake.
 - `transfer_native_to_treasury` / `claim_surplus_tusdt` — treasury sweeps are capped at the
   market's cash **minus all committed claims** (`market_obligations` = supplier face value
-  `total_supplied × exchange_rate` + `reserve_accrued` + unfunded deficit), then minus
+  `total_supplied × exchange_rate` + `reserve_accrued`), then minus
   `stake_buffer` and the 1-rao existential-deposit guard for the native sweep. Because a
   market's cash is fully committed whenever debt is outstanding (`cash = supplier_face +
   reserve − debt`), these sweeps normally collect nothing — only leftovers such as dust and
-  donations. Neither can ever move supplier principal, the reserve, or deficit backing.
+  donations. Neither can ever move supplier principal or the reserve.
 
 **Risks and mitigations.**
 
@@ -487,8 +488,9 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
    on both markets (TAO + TUSDT, with accrued interest) and receive all the alpha
    collateral across every netuid, minus the platform's `liquidation_fee` (default 5%,
    capped at the surplus share so you never lose principal). If the collateral cannot cover
-   the debt, you pay only the collateral value (break-even) and the residual is written off
-   as a market deficit.
+   the debt (underwater), the platform's cut is waived, you receive all the collateral and
+   still pay the full debt — you may take a value loss, and no write-off or deficit is ever
+   booked.
 8. **Root-subnet staking (keeper)** — anyone can call `sweep()` (rate-limited to once per
    block) to stake excess idle TAO into the root subnet; governance configures and enables
    the feature via `set_root_stake_config`.
@@ -504,7 +506,7 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
 | `reserve_factor` | Protocol share of borrower interest | 2000 (20%) | bps |
 | `collateral_factor` | Max borrow power per alpha unit | 5000 (50%) | bps |
 | `liquidation_threshold` | Health-factor denominator per netuid | 6000 (60%) | bps |
-| `liquidation_fee` | Platform share of seized alpha, capped at the surplus share | 500 (5%) | bps |
+| `liquidation_fee` | Platform share of seized alpha, capped at the surplus share; waived when the collateral cannot cover the debt | 500 (5%) | bps |
 | `max_oracle_age_ms` | Max age of an acceptable price | 1_800_000 (30 min) | ms |
 | `supply_cap_tao / _tusdt` | Max supplied per market (0 = unlimited) | 0 | Balance |
 | `borrow_cap_tao / _tusdt` | Max debt per market (0 = unlimited) | 0 | Balance |
@@ -545,7 +547,8 @@ but the variants are retained for ABI stability.
 
 Root-subnet staking adds **no new error variants** — invalid `set_root_stake_config`
 parameters and sweep/top-up failures reuse the existing catalogue. The Phase 1–2 work
-(up-front borrow interest, full-seizure liquidation fee, bad-debt deficit) also adds
-**no new error variants**; the new messages are `cover_deficit` (maintainer) and the
-read `get_market_deficit`, and the new events are `DeficitReported` and
-`DeficitCovered`.
+(up-front borrow interest, full-seizure liquidation fee) also adds **no new error
+variants**; the earlier `cover_deficit` message, `get_market_deficit` read, and
+`DeficitReported` / `DeficitCovered` events were **removed** with the no-deficit
+redesign — every liquidation now repays the pool in full, so no deficit machinery
+exists.
