@@ -133,6 +133,16 @@ reserve_delta = debt_interest − supply_interest       # → reserve_accrued
 The reserve accumulates per market and anyone can send it to the treasury via permissionless
 `claim_reserve(market_id)` (capped at the market's free balance, never root stake).
 
+The reserve is **not** a withdrawal deduction. The withdraw guard is only
+`underlying = floor(ltokens · exchange_rate) ≤ market_cash` (plus the root-staking
+top-up path) — `reserve_accrued` is never subtracted from the cash a withdrawal may
+take. The reserve is protocol profit (`debt_interest − supply_interest` at the 20%
+reserve factor) that leaves the pool only via `claim_reserve` or reallocation to an
+unfunded deficit by `cover_deficit`, and it is one of the market obligations that cap
+the treasury sweeps (see Idle TAO root-subnet staking). A pool free balance **above**
+the suppliers' total face value is therefore normal whenever `reserve_accrued > 0` or
+sub-rao rounding dust exists — it is the reserve (and dust), not leaked user funds.
+
 ### Scaled debt
 
 Per-user debt is stored as a fixed number that grows only when the user acts; the market-wide
@@ -181,6 +191,26 @@ mints 1:1 claims that are backed 1:1. The borrow index is never reset: it is sel
 for scaled debt across cycles.
 
 Amounts that round to zero revert with `MintBelowPrecision`.
+
+**lToken units on both sides — never display `total_supplied` raw.**
+`get_market_state` returns `total_supplied` as stored: a scaled lToken count, not a
+TAO/TUSDT balance; the face claim it represents is `total_supplied · exchange_rate`.
+Rendering the raw field as face understates supplier liquidity by the exchange-rate
+factor — in a real incident a UI reported `0.9972` TAO supplied while the true
+supplier claim was `999_999_999` rao (≈ 1.0 TAO) at exchange rate ≈ 1.002816870398849427
+(`1_002_816_870_398_849_427` inner). Withdrawals use the same units:
+`withdraw_tao` / `withdraw_tusdt(ltoken_amount)` burn lTokens, and passing a
+TAO/TUSDT face amount that exceeds your lToken position reverts with
+`InsufficientLTokenBalance`. For displays, `get_market_available_liquidity(market_id)`
+returns the supplier-withdrawable face liquidity (`min(market_cash,
+total_supplied · exchange_rate)`, in rao; `None` when the market does not exist) — it
+exists only on deployments of the new build; on older deployments clients must scale
+`total_supplied` by the exchange rate themselves.
+
+Mint and redeem both floor, so a deposit made at a grown exchange rate can never be
+redeemed 1:1 — a full round trip leaves up to ~1 rao of sub-rao dust with the pool
+(the accepted Aave-style double-floor dust behind the rounding demos in the
+calculation guide).
 
 ### Alpha collateral value
 
