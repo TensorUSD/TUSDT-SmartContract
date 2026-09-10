@@ -495,6 +495,56 @@ beforehand. Execution before the delay reverts with `ParamsUpdateTimelockActive`
    block) to stake excess idle TAO into the root subnet; governance configures and enables
    the feature via `set_root_stake_config`.
 
+### Reading your position
+
+Three read-only views resolve a user's position without walking pages. They are pure storage
+reads — no writes, no chain-extension calls, and no new error variants: none returns `Result`.
+
+- `get_user_market_position(market_id, user)` → `UserMarketPosition` — one call for one
+  `(user, market_id)`, with face values resolved on-chain. It never reverts and never returns
+  `None`: an id that was never created reports `market_exists == false`, while a market the user
+  never touched — or touched and fully closed, since the all-zero `Position` row persists in
+  storage — reports `has_position == false` with zero amounts.
+- `get_user_positions(user)` → `Vec<UserMarketPosition>` — every market where the user holds
+  something non-zero, in `market_keys` order (0, then 1, then alpha markets by creation order).
+  Non-paginated and complete in one call: the result is bounded by the number of markets — only
+  maintainer/governance can add one via `set_approved_netuid` — not by the global `position_keys`
+  list.
+- `get_alpha_market_ids()` → `Vec<(u8, u16)>` — every **approved** alpha market as a `(market_id,
+  netuid)` pair; ids retained after unapproval are skipped. The only read that exposes the
+  market-id space and the id→netuid translation.
+
+`UserMarketPosition` fields, in encode order:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `market_id` | `u8` | Market this row describes. |
+| `market_exists` | `bool` | `false` for an id that was never created; every other field is then zero / `None`. |
+| `alpha_netuid` | `Option<u16>` | Subnet of an alpha market; `None` for markets 0/1 and for a retired id. An `Option` rather than a `0` sentinel because netuid 0 (root) is itself approvable and `0` is falsy in JS. |
+| `has_position` | `bool` | `false` when the user holds nothing in this market (never touched, or touched and fully closed). |
+| `ltoken_balance` | `Balance` | Raw lToken balance (scaled units — value face via `exchange_rate`). |
+| `supply_face` | `Option<Balance>` | `ltoken_balance` at the market exchange rate, in **face** rao. |
+| `scaled_debt` | `Balance` | Raw scaled debt (face via `borrow_index`). |
+| `debt_face` | `Option<Balance>` | `scaled_debt` at the market borrow index, in **face** rao. |
+| `alpha_principal` | `Balance` | Booked alpha collateral principal. |
+
+Per market kind:
+
+- **Markets 0 (TAO) and 1 (TUSDT)** are supply-and-borrow: `ltoken_balance` / `supply_face` and
+  `scaled_debt` / `debt_face` are live, `alpha_principal` is 0, and `alpha_netuid` is `None`.
+- **Markets 2+** are alpha collateral-only: only `alpha_principal` is meaningful, `supply_face`
+  and `debt_face` are `Some(0)`, and `alpha_netuid` is the real netuid for an approved market
+  (`None` for a retired id).
+
+The two faces are `Option` **only** for "cannot be valued" — the multiply overflows `Balance`.
+`Some(0)` means genuinely zero; `None` is **never** zero, because a plain `0` would understate debt.
+
+This replaces per-user paging over the global, first-touch-ordered `position_keys`.
+`get_positions(user, page)` is retained for ABI stability but is deprecated for per-user use — it
+windows the *global* list before filtering by user, so a user whose keys were first touched at index
+≥ 10 gets an empty page 0 with no count / has-more signal. `get_all_positions(page)` remains the
+global paginated enumerator.
+
 ## Key parameters
 
 | Parameter | Meaning | Default | Scale |

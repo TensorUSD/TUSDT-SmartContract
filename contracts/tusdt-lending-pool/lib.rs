@@ -6,7 +6,7 @@
 pub use self::lending_pool::{
     AlphaMarketParams, AlphaMarketParamsConfig, InterestRateParams, InterestRateParamsConfig,
     PoolGlobalParams, PoolGlobalParamsConfig, RootStakeConfig, TusdtLendingPool,
-    TusdtLendingPoolRef,
+    TusdtLendingPoolRef, UserMarketPosition,
 };
 
 #[ink::contract(env = tusdt_env::CustomEnvironment)]
@@ -166,7 +166,8 @@ mod lending_pool {
 
     /// Per-market runtime accrual state. Markets 0 (TAO) and 1 (TUSDT) are supply+borrow
     /// markets with interest accrual. Markets 2+ are alpha collateral-only markets (one per
-    /// approved subnet); their MarketState exists but accrual is a no-op.
+    /// approved subnet); they have NO `MarketState` entry — `get_market_state` returns `None`
+    /// for them and the supply/borrow/accrual fields above do not apply.
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
@@ -225,6 +226,65 @@ mod lending_pool {
         /// Scaled debt: actual_debt = scaled_debt × market.borrow_index.
         pub scaled_debt: Balance,
         /// Alpha principal units deposited (alpha markets only).
+        pub alpha_principal: Balance,
+    }
+
+    /// A user's position in ONE market — supply, debt and alpha collateral —
+    /// with face values resolved on-chain, plus the market's netuid when it is
+    /// an alpha market.
+    ///
+    /// Returned by `get_user_market_position` (single market, any id) and by
+    /// `get_user_positions` (every market the user holds something in).
+    ///
+    /// `Position` itself is stored in scaled units; this view adds the face
+    /// values so a client never re-derives them and can never drift from
+    /// `rates.rs`, from `get_underlying_balance` / `get_user_debt`, or from the
+    /// exchange rate / borrow index changing between two separate reads.
+    ///
+    /// Per market kind: ids 0 (TAO) and 1 (TUSDT) are supply+borrow markets, so
+    /// `ltoken_balance`/`supply_face` and `scaled_debt`/`debt_face` are the live
+    /// numbers and `alpha_principal` is 0. Ids >= 2 are alpha collateral-only:
+    /// only `alpha_principal` is meaningful, `supply_face` and `debt_face` are
+    /// `Some(0)` (no supply or borrow exists there), and `alpha_netuid` is the
+    /// real netuid.
+    ///
+    /// This type is return-only — it is never stored — so it deliberately
+    /// carries no `StorageLayout` derive.
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
+    pub struct UserMarketPosition {
+        /// The market this view is for (0 = TAO, 1 = TUSDT, 2+ = alpha).
+        pub market_id: u8,
+        /// `true` if `market_id` is a market this pool knows about (present in
+        /// `market_keys`). `false` means the caller passed an id that was never
+        /// created — every other field is then zero/absent.
+        pub market_exists: bool,
+        /// Netuid of an APPROVED alpha market, for pricing alpha collateral
+        /// against the (netuid-keyed) oracle. `None` for markets 0 and 1 (they
+        /// have no netuid) and for an alpha id whose netuid was unapproved (the
+        /// id lingers in `market_keys`). This is an `Option` rather than a `0`
+        /// sentinel on purpose: netuid 0 (the root subnet) is itself approvable,
+        /// and 0 is falsy in every JS/TS guard.
+        pub alpha_netuid: Option<u16>,
+        /// `true` if any of the three raw amounts below is non-zero. A closed
+        /// position persists in storage as an all-zero `Position`, so this flag
+        /// is what distinguishes "holds nothing" from "has a stale row".
+        pub has_position: bool,
+        /// Raw lToken receipt balance (scaled units; supply markets 0/1 only).
+        pub ltoken_balance: Balance,
+        /// `ltoken_balance` valued at the market's current exchange rate
+        /// (`compute_redeem_amount`), in FACE units (rao) for markets 0/1 and
+        /// `Some(0)` for alpha markets. `None` only when the face cannot be
+        /// represented: no accrual state exists while the raw amount is
+        /// non-zero, or the multiply overflows `Balance`. `None` is NEVER zero.
+        pub supply_face: Option<Balance>,
+        /// Raw scaled debt: actual debt = scaled_debt x market borrow index.
+        pub scaled_debt: Balance,
+        /// `scaled_debt` valued at the market's current borrow index
+        /// (`scaled_debt_to_face`), in FACE units (rao). Same `None` rules and
+        /// the same "never zero" guarantee as `supply_face`.
+        pub debt_face: Option<Balance>,
+        /// Alpha principal units deposited (alpha markets 2+ only).
         pub alpha_principal: Balance,
     }
 
@@ -3336,6 +3396,15 @@ mod lending_pool {
         }
 
         /// Returns up to `PAGE_SIZE` positions of a user on the given page.
+        ///
+        /// **Deprecated for per-user queries.** The `position_keys` list this
+        /// walks is global and ordered by first touch, so the page window is
+        /// taken over ALL users' keys and only then filtered by `user`: a user
+        /// whose keys were first touched at index `PAGE_SIZE` or later gets an
+        /// EMPTY result for page 0, and there is no count / has-more signal to
+        /// tell a caller to keep walking. Use `get_user_positions` instead,
+        /// which returns a user's complete position set in one call. Kept for
+        /// backward compatibility; newly written clients should not call it.
         #[ink(message)]
         pub fn get_positions(&self, user: AccountId, page: u32) -> Vec<(u8, Position)> {
             let mut result = Vec::new();
@@ -3383,6 +3452,181 @@ mod lending_pool {
                 if let Some(pos) = self.positions.get(key) {
                     result.push((key, pos));
                 }
+            }
+            result
+        }
+
+        /// Returns `true` if `market_id` is a market the pool knows about, i.e.
+        /// it is present in `market_keys` (the two debt markets plus one id per
+        /// netuid ever approved). Bounded by `market_keys.len()`.
+        fn market_exists(&self, market_id: u8) -> bool {
+            let count = self.market_keys.len();
+            for i in 0..count {
+                if let Some(id) = self.market_keys.get(i) {
+                    if id == market_id {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+
+        /// Builds the `UserMarketPosition` view shared by
+        /// `get_user_market_position` and `get_user_positions`. `market_exists`
+        /// is passed in because the enumeration already knows the id came from
+        /// `market_keys` and should not rescan for it.
+        fn user_market_view(
+            &self,
+            market_id: u8,
+            user: AccountId,
+            market_exists: bool,
+        ) -> UserMarketPosition {
+            let pos = self.positions.get((market_id, user)).unwrap_or(Position {
+                ltoken_balance: 0,
+                scaled_debt: 0,
+                alpha_principal: 0,
+            });
+            let state = self.markets.get(market_id);
+            // Faces are None ONLY when a non-zero raw amount cannot be valued:
+            // no accrual state (alpha markets) or an overflow of `Balance`. A
+            // genuine zero is `Some(0)`, never `None`.
+            let supply_face = match state {
+                Some(s) => compute_redeem_amount(pos.ltoken_balance, s.exchange_rate),
+                None if pos.ltoken_balance == 0 => Some(0),
+                None => None,
+            };
+            let debt_face = match state {
+                Some(s) => scaled_debt_to_face(pos.scaled_debt, s.borrow_index),
+                None if pos.scaled_debt == 0 => Some(0),
+                None => None,
+            };
+            let alpha_netuid =
+                if market_id < 2 { None } else { self.market_to_netuid.get(market_id) };
+            UserMarketPosition {
+                market_id,
+                market_exists,
+                alpha_netuid,
+                has_position: pos.ltoken_balance != 0
+                    || pos.scaled_debt != 0
+                    || pos.alpha_principal != 0,
+                ltoken_balance: pos.ltoken_balance,
+                supply_face,
+                scaled_debt: pos.scaled_debt,
+                debt_face,
+                alpha_principal: pos.alpha_principal,
+            }
+        }
+
+        /// Returns `user`'s position in `market_id` — supply, debt and alpha
+        /// collateral — in ONE call, with face values resolved on-chain.
+        ///
+        /// This is the primary (address, market_id) read, for ANY `market_id`:
+        /// 0 = TAO supply+borrow, 1 = TUSDT supply+borrow, 2+ = one alpha
+        /// collateral market per approved netuid. It never reverts and never
+        /// returns `None` — an id that was never created comes back with
+        /// `market_exists == false`, and a market the user never touched (or
+        /// touched and fully closed, whose all-zero `Position` still sits in
+        /// storage) comes back with `has_position == false` and zero amounts.
+        /// So a client can render "nothing here" without distinguishing
+        /// undefined from zero, and a mistyped id is self-diagnosing.
+        ///
+        /// `supply_face` is `compute_redeem_amount(ltoken_balance,
+        /// exchange_rate)` and `debt_face` is `scaled_debt_to_face(scaled_debt,
+        /// borrow_index)` — the same helpers the market itself uses, so they can
+        /// never disagree with `get_underlying_balance` / `get_user_debt`, and
+        /// they are read atomically with the raw amounts. A `None` face means
+        /// the face cannot be represented (see `UserMarketPosition`); it is
+        /// never a substitute for zero.
+        ///
+        /// `alpha_netuid` carries the netuid needed to price alpha collateral
+        /// against the oracle, so no client has to join `get_alpha_markets` by
+        /// list order.
+        #[ink(message)]
+        pub fn get_user_market_position(
+            &self,
+            market_id: u8,
+            user: AccountId,
+        ) -> UserMarketPosition {
+            let exists = self.market_exists(market_id);
+            self.user_market_view(market_id, user, exists)
+        }
+
+        /// Returns `user`'s position in EVERY market where it holds something
+        /// non-zero, as `UserMarketPosition` values in `market_keys` order
+        /// (0, then 1, then alpha markets by creation order).
+        ///
+        /// Non-paginated and complete in one call: the scan is bounded by the
+        /// number of markets — which only the maintainer or governance can grow
+        /// (`set_approved_netuid`, gated by `ensure_maintainer`) — NOT by the
+        /// global `position_keys` list. That is what distinguishes it from the
+        /// deprecated `get_positions`: that read windows the first-touch-ordered
+        /// global key list, so it misses every user whose keys were first
+        /// touched after index `PAGE_SIZE - 1`, with no count / has-more signal
+        /// telling a client to keep walking. Here a user's complete position set
+        /// is always returned, regardless of how many other users or keys exist.
+        ///
+        /// Zeroed rows are filtered even though they persist in storage
+        /// (`positions` entries are never removed), so an empty vec means the
+        /// user holds nothing in any market.
+        ///
+        /// Every entry has `market_exists == true` (the ids come from
+        /// `market_keys`). An id retained in `market_keys` after its netuid was
+        /// unapproved still reports its raw `alpha_principal` with
+        /// `alpha_netuid == None` — normally that principal is zero, because
+        /// unapproval refuses while collateral remains, so it drops out of the
+        /// result entirely.
+        #[ink(message)]
+        pub fn get_user_positions(&self, user: AccountId) -> Vec<UserMarketPosition> {
+            let mut result = Vec::new();
+            let count = self.market_keys.len();
+            for i in 0..count {
+                let market_id = match self.market_keys.get(i) {
+                    Some(id) => id,
+                    None => continue,
+                };
+                let view = self.user_market_view(market_id, user, true);
+                if !view.has_position {
+                    continue;
+                }
+                result.push(view);
+            }
+            result
+        }
+
+        /// Returns every APPROVED alpha market as `(market_id, netuid)` pairs in
+        /// `market_keys` order — the id space a client must know to use
+        /// `get_user_market_position`, and the id -> netuid translation needed to
+        /// price alpha collateral against the oracle.
+        ///
+        /// `get_alpha_markets` returns `(netuid, params)` WITHOUT the market id,
+        /// so the only way to pair the two today is by list order — fragile and
+        /// silently wrong for a client that filters or sorts. This read removes
+        /// that join: both reads walk `market_keys` in the same order, but here
+        /// the pairing is data, not position.
+        ///
+        /// Ids retained in `market_keys` after their netuid was unapproved are
+        /// skipped (`market_to_netuid` is gone for them), so `len()` is the true
+        /// approved-market count — unlike `get_active_netuids_count`, which
+        /// counts every id >= 2 ever minted (unapproval never pops
+        /// `market_keys`, so re-approval of the same netuid mints a new id). An
+        /// empty vec means no alpha market is approved.
+        #[ink(message)]
+        pub fn get_alpha_market_ids(&self) -> Vec<(u8, u16)> {
+            let mut result = Vec::new();
+            let count = self.market_keys.len();
+            for i in 0..count {
+                let market_id = match self.market_keys.get(i) {
+                    Some(id) => id,
+                    None => continue,
+                };
+                if market_id < 2 {
+                    continue;
+                }
+                let netuid = match self.market_to_netuid.get(market_id) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                result.push((market_id, netuid));
             }
             result
         }

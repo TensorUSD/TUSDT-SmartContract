@@ -373,10 +373,26 @@ no yield index and no 25/75 split — the entire excess goes to the treasury.
   interest; `interest = debt − principal`. Principal is tracked in a dedicated mapping updated on
   borrow/repay/liquidate; positions created before principal tracking fall back to an estimate.
 - `get_alpha_markets()` → `Vec<(netuid, AlphaMarketParams)>` — list all approved alpha markets
+- `get_alpha_market_ids()` → `Vec<(u8, u16)>` — every **approved** alpha market as a `(market_id, netuid)`
+  pair; ids retained after unapproval are skipped. The only read that exposes the market-id space and
+  the id→netuid translation.
 - `get_user_alpha_position(user, netuid)` → alpha principal for a specific subnet
+- `get_user_market_position(market_id, user)` → `UserMarketPosition` — one call for one
+  `(user, market_id)`, with lToken and debt face values resolved on-chain. Never reverts, never
+  returns `None`: a market the user never touched (or touched and fully closed) reports
+  `has_position == false` with zero amounts, and an id that was never created reports
+  `market_exists == false`.
+- `get_user_positions(user)` → `Vec<UserMarketPosition>` — every market where the user holds something
+  non-zero, in `market_keys` order (0, then 1, then alpha markets by creation order). Complete in one
+  call — **non-paginated**.
 - `get_netuid_total_collateral(netuid)`
 - `paused()`, `governance()`, `treasury()`, `platform()`, `get_pool_hotkey()`, `get_oracle_address()`
-- Paginated: `get_positions(user, page)`, `get_all_positions(page)` (10 per page)
+- Paginated: `get_all_positions(page)` (10 per page) — the **global** enumerator over the
+  first-touch-ordered `position_keys`. **Per-user reads are not paginated**: use
+  `get_user_positions(user)`. `get_positions(user, page)` is retained for ABI stability but
+  **deprecated for per-user use** — it windows the *global* `position_keys` before filtering by user,
+  so a user whose keys were first touched at index ≥ 10 gets an empty page 0 with no count/has-more
+  signal.
 
 > Health factor, borrow capacity, and collateral/debt value are computed by internal helpers
 > (`get_health_factor`, `get_available_borrow_tusdt`, `get_collateral_value_tusdt`,
