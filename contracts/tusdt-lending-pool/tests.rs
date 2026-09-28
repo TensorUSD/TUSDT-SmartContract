@@ -1428,6 +1428,322 @@ fn multi_market_positions_independent() {
     assert_eq!(all[0].1.scaled_debt, 50);
 }
 
+// ---------------------------------------------------------------------------
+// Address-keyed position reads:
+// get_user_market_position / get_user_positions / get_alpha_market_ids
+// ---------------------------------------------------------------------------
+
+fn zero_position() -> Position {
+    Position {
+        ltoken_balance: 0,
+        scaled_debt: 0,
+        alpha_principal: 0,
+    }
+}
+
+#[ink::test]
+fn user_market_position_untouched_and_unknown_market() {
+    let (pool, accounts) = setup();
+
+    let v = pool.get_user_market_position(0, accounts.bob);
+    assert!(v.market_exists, "market 0 always exists");
+    assert!(!v.has_position, "bob holds nothing");
+    assert!(v.alpha_netuid.is_none(), "market 0 is not an alpha market");
+    assert_eq!(v.market_id, 0);
+    assert_eq!(v.ltoken_balance, 0);
+    assert_eq!(v.scaled_debt, 0);
+    assert_eq!(v.alpha_principal, 0);
+    assert_eq!(v.supply_face, Some(0), "a genuine zero face is Some(0)");
+    assert_eq!(v.debt_face, Some(0));
+
+    // An id that was never created is self-diagnosing rather than a revert.
+    let bad = pool.get_user_market_position(7, accounts.bob);
+    assert!(!bad.market_exists, "market 7 was never created");
+    assert!(!bad.has_position);
+    assert_eq!(bad.market_id, 7);
+    assert_eq!(bad.supply_face, Some(0));
+
+    assert!(pool.get_user_positions(accounts.bob).is_empty());
+    // The pre-existing netuid-keyed read: netuid 1 is not approved here.
+    assert!(!pool.is_approved_netuid(1));
+    assert_eq!(pool.get_user_alpha_position(accounts.bob, 1), None);
+}
+
+#[ink::test]
+fn user_market_position_reports_supply_debt_and_alpha_separately() {
+    let (mut pool, accounts) = setup();
+    pool.debug_set_position(
+        0,
+        accounts.alice,
+        Position {
+            ltoken_balance: 100,
+            scaled_debt: 50,
+            alpha_principal: 0,
+        },
+    );
+    pool.debug_set_position(
+        1,
+        accounts.alice,
+        Position {
+            ltoken_balance: 0,
+            scaled_debt: 7,
+            alpha_principal: 0,
+        },
+    );
+
+    // One call carries supply AND debt for the market.
+    let tao = pool.get_user_market_position(0, accounts.alice);
+    assert!(tao.has_position);
+    assert_eq!(tao.ltoken_balance, 100);
+    assert_eq!(tao.scaled_debt, 50);
+    assert_eq!(tao.alpha_principal, 0);
+    assert!(tao.alpha_netuid.is_none());
+    assert_eq!(tao.supply_face, Some(100), "constructor exchange rate is 1.0");
+    assert_eq!(tao.debt_face, Some(50), "constructor borrow index is 1.0");
+
+    let tusdt = pool.get_user_market_position(1, accounts.alice);
+    assert!(tusdt.has_position);
+    assert_eq!(tusdt.ltoken_balance, 0);
+    assert_eq!(tusdt.scaled_debt, 7);
+    assert_eq!(tusdt.debt_face, Some(7));
+    assert!(tusdt.alpha_netuid.is_none());
+
+    // Enumeration is complete and in market_keys order.
+    let all = pool.get_user_positions(accounts.alice);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].market_id, 0);
+    assert_eq!(all[1].market_id, 1);
+}
+
+#[ink::test]
+fn user_market_position_face_values_match_helpers() {
+    let (mut pool, accounts) = setup();
+    pool.debug_set_market_state(
+        0,
+        MarketState {
+            total_supplied: 0,
+            total_debt: 0,
+            total_scaled_debt: 0,
+            borrow_index: Ratio::from_inner(1_200_000_000_000_000_000),
+            exchange_rate: Ratio::from_inner(1_500_000_000_000_000_000),
+            reserve_accrued: 0,
+            last_update: 0,
+        },
+    );
+    pool.debug_set_position(
+        0,
+        accounts.alice,
+        Position {
+            ltoken_balance: 1_000_000_000,
+            scaled_debt: 1_000_000_000,
+            alpha_principal: 0,
+        },
+    );
+
+    let v = pool.get_user_market_position(0, accounts.alice);
+    assert_eq!(v.supply_face, Some(1_500_000_000), "1e9 lTokens at 1.5x");
+    assert_eq!(v.debt_face, Some(1_200_000_000), "1e9 scaled at 1.2x");
+
+    // The faces agree with the pre-existing per-market reads (same helpers).
+    assert_eq!(
+        pool.get_underlying_balance(0, accounts.alice),
+        Some(1_500_000_000)
+    );
+    assert_eq!(pool.get_user_debt(0, accounts.alice), Some(1_200_000_000));
+
+    // Floor direction: sub-rao dust stays with the pool, never rounds up.
+    pool.debug_set_position(
+        0,
+        accounts.alice,
+        Position {
+            ltoken_balance: 1,
+            scaled_debt: 0,
+            alpha_principal: 0,
+        },
+    );
+    let dust = pool.get_user_market_position(0, accounts.alice);
+    assert_eq!(dust.supply_face, Some(1), "floor(1 x 1.5) = 1, never 2");
+}
+
+#[ink::test]
+fn user_market_position_alpha_market_reports_netuid() {
+    let (mut pool, accounts) = setup_with_alpha(1);
+    pool.debug_set_position(
+        2,
+        accounts.alice,
+        Position {
+            ltoken_balance: 0,
+            scaled_debt: 0,
+            alpha_principal: 500,
+        },
+    );
+
+    let v = pool.get_user_market_position(2, accounts.alice);
+    assert!(v.market_exists);
+    assert_eq!(v.alpha_netuid, Some(1), "market id 2 -> netuid 1");
+    assert_eq!(v.alpha_principal, 500);
+    assert_eq!(v.ltoken_balance, 0);
+    assert_eq!(v.scaled_debt, 0);
+    assert!(v.has_position);
+    // Alpha markets have no accrual state, so the faces are a genuine zero —
+    // the read must not fail and must not report None.
+    assert_eq!(v.supply_face, Some(0));
+    assert_eq!(v.debt_face, Some(0));
+
+    // Agreement with the pre-existing netuid-keyed read.
+    assert!(pool.is_approved_netuid(1));
+    assert_eq!(pool.get_user_alpha_position(accounts.alice, 1), Some(500));
+    assert_eq!(pool.get_alpha_market_ids(), vec![(2, 1)]);
+    assert_eq!(pool.get_user_positions(accounts.alice).len(), 1);
+}
+
+#[ink::test]
+fn user_market_position_unapproved_alpha_id_keeps_id_drops_netuid() {
+    let (mut pool, accounts) = setup_with_alpha(1);
+    pool.debug_set_position(
+        2,
+        accounts.alice,
+        Position {
+            ltoken_balance: 0,
+            scaled_debt: 0,
+            alpha_principal: 500,
+        },
+    );
+    assert_eq!(pool.get_alpha_market_ids(), vec![(2, 1)]);
+
+    // Unapproval only checks the per-netuid collateral BOOKKEEPING, which the
+    // debug seed does not touch, so it succeeds while the raw row survives.
+    set_caller(accounts.alice);
+    pool.set_approved_netuid(1, false).unwrap();
+
+    let v = pool.get_user_market_position(2, accounts.alice);
+    assert!(v.market_exists, "id 2 is still in market_keys");
+    assert!(v.alpha_netuid.is_none(), "the netuid mapping is gone");
+    assert_eq!(v.alpha_principal, 500, "the raw position survives");
+    assert!(v.has_position);
+    // The netuid-keyed read can no longer reach it.
+    assert_eq!(pool.get_user_alpha_position(accounts.alice, 1), None);
+    assert!(pool.get_alpha_market_ids().is_empty());
+}
+
+#[ink::test]
+fn user_positions_filters_zeroed_and_stale_rows() {
+    let (mut pool, accounts) = setup_with_alpha(1);
+    pool.debug_set_position(0, accounts.alice, zero_position());
+    pool.debug_set_position(2, accounts.alice, zero_position());
+
+    // The rows really are in storage (positions are never removed)...
+    assert_eq!(pool.get_position(0, accounts.alice), Some(zero_position()));
+    assert_eq!(pool.get_position(2, accounts.alice), Some(zero_position()));
+    // ...but enumeration filters them, so a closed market is not a phantom row.
+    assert!(pool.get_user_positions(accounts.alice).is_empty());
+}
+
+#[ink::test]
+fn user_positions_bypasses_position_keys_page_zero() {
+    let (mut pool, accounts) = setup();
+    // Ten foreign keys occupy global indices 0..=9.
+    for market_id in 0u8..10u8 {
+        pool.debug_push_position_key(market_id, accounts.bob);
+    }
+    pool.debug_set_position(
+        0,
+        accounts.alice,
+        Position {
+            ltoken_balance: 100,
+            scaled_debt: 0,
+            alpha_principal: 0,
+        },
+    );
+    // Alice's key therefore lands at global index 10.
+    pool.debug_push_position_key(0, accounts.alice);
+
+    // The paginated per-user read windows the GLOBAL list and only then filters
+    // by user, so page 0 is all of bob's keys and alice looks empty — the
+    // reported bug — and nothing tells a caller to ask for page 1.
+    assert!(pool.get_positions(accounts.alice, 0).is_empty());
+    assert_eq!(pool.get_positions(accounts.alice, 1).len(), 1);
+
+    // The market-bounded read is immune: one call, complete answer.
+    let all = pool.get_user_positions(accounts.alice);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].market_id, 0);
+    assert_eq!(all[0].ltoken_balance, 100);
+}
+
+#[ink::test]
+fn alpha_market_ids_lists_only_approved() {
+    let (mut pool, accounts) = setup_with_alpha(1);
+    assert_eq!(pool.get_alpha_market_ids(), vec![(2, 1)]);
+
+    set_caller(accounts.alice);
+    pool.set_approved_netuid(2, true).unwrap();
+    assert_eq!(pool.get_alpha_market_ids(), vec![(2, 1), (3, 2)]);
+
+    // Retiring the first market drops its id from the discovery read. The id
+    // stays in market_keys, which is exactly why get_active_netuids_count still
+    // counts it — the two reads legitimately differ.
+    pool.set_approved_netuid(1, false).unwrap();
+    assert_eq!(pool.get_alpha_market_ids(), vec![(3, 2)]);
+    assert_eq!(
+        pool.get_alpha_markets().len(),
+        1,
+        "lockstep with the pre-existing alpha-market read"
+    );
+    assert_eq!(pool.get_active_netuids_count(), 2, "still counts the retired id");
+}
+
+#[ink::test]
+fn user_market_position_face_overflow_is_none_not_zero() {
+    let (mut pool, accounts) = setup();
+    pool.debug_set_market_state(
+        0,
+        MarketState {
+            total_supplied: 0,
+            total_debt: 0,
+            total_scaled_debt: 0,
+            borrow_index: Ratio::one(),
+            exchange_rate: Ratio::from_inner(2_000_000_000_000_000_000),
+            reserve_accrued: 0,
+            last_update: 0,
+        },
+    );
+    pool.debug_set_position(
+        0,
+        accounts.alice,
+        Position {
+            ltoken_balance: u64::MAX,
+            scaled_debt: 0,
+            alpha_principal: 0,
+        },
+    );
+
+    let v = pool.get_user_market_position(0, accounts.alice);
+    assert_eq!(v.ltoken_balance, u64::MAX, "the raw truth is still returned");
+    assert!(v.has_position);
+    // u64::MAX x 2.0 overflows Balance, so the face cannot be represented. A
+    // silent 0 here would UNDERSTATE what the user can withdraw.
+    assert_eq!(v.supply_face, None);
+    // A genuine zero is still Some(0), never None.
+    assert_eq!(v.debt_face, Some(0));
+}
+
+#[ink::test]
+fn user_market_position_argument_order_is_market_then_user() {
+    let (mut pool, accounts) = setup();
+    pool.debug_set_position(
+        0,
+        accounts.alice,
+        Position {
+            ltoken_balance: 100,
+            scaled_debt: 0,
+            alpha_principal: 0,
+        },
+    );
+    assert!(pool.get_user_market_position(0, accounts.alice).has_position);
+    assert!(!pool.get_user_market_position(0, accounts.bob).has_position);
+}
+
 #[ink::test]
 fn deposit_withdraw_deposit_alpha_no_duplicate_keys() {
     let (mut pool, accounts) = setup_with_alpha(1);
